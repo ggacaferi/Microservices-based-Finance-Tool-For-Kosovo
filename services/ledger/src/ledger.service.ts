@@ -1,4 +1,4 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
@@ -20,7 +20,7 @@ export type IncomingEvent = BillPostedEvent | BillRevertedEvent;
  * Owns its own Postgres database (guri_ledger).
  */
 @Injectable()
-export class LedgerService {
+export class LedgerService implements OnModuleInit {
   private readonly logger  = new Logger(LedgerService.name);
   private readonly mem: JournalEntry[] = [];
   private readonly aiUrl   = process.env.AI_SERVICE_URL || 'http://ai:3005';
@@ -30,6 +30,23 @@ export class LedgerService {
     private readonly orm?: Repository<JournalEntryOrmEntity>,
   ) {
     this.logger.log(this.orm ? 'LedgerService: Postgres-backed' : 'LedgerService: in-memory');
+  }
+
+  async onModuleInit(): Promise<void> {
+    if (!this.orm) return;
+    const rows = await this.orm.find({ order: { createdAt: 'ASC' } });
+    for (const row of rows) {
+      this.mem.push({
+        id: row.id,
+        reference: row.reference,
+        date: row.date,
+        kind: row.kind as 'ORIGINAL' | 'STORNO',
+        amount: Number(row.amount),
+        lines: row.lines,
+        reversedBy: row.reversedBy,
+      });
+    }
+    if (rows.length > 0) this.logger.log(`Rehydrated ${rows.length} journal entries from Postgres`);
   }
 
   async handleEvent(event: IncomingEvent): Promise<void> {

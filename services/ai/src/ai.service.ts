@@ -1,4 +1,4 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
@@ -23,7 +23,7 @@ export interface JournalEntryPostedEvent {
 }
 
 @Injectable()
-export class AiService {
+export class AiService implements OnModuleInit {
   private readonly logger = new Logger(AiService.name);
 
   private totalExpenses = 0;
@@ -39,6 +39,20 @@ export class AiService {
     private readonly orm?: Repository<AiEventOrmEntity>,
   ) {
     this.logger.log(this.orm ? 'AI Service: pgvector Postgres-backed' : 'AI Service: in-memory');
+  }
+
+  async onModuleInit(): Promise<void> {
+    if (!this.orm) return;
+    const rows = await this.orm.find({ order: { createdAt: 'ASC' } });
+    for (const row of rows) {
+      const amount = Number(row.amount);
+      this.totalExpenses += amount;
+      this.entryCount++;
+      if (row.isStorno) this.totalStornos++;
+      if (row.date > this.lastUpdated) this.lastUpdated = row.date;
+      this.history.push({ reference: row.reference, amount, date: row.date, isStorno: row.isStorno });
+    }
+    if (rows.length > 0) this.logger.log(`Rebuilt aggregate from ${rows.length} Postgres events (net €${this.totalExpenses.toFixed(2)})`);
   }
 
   /** Called by AiController when Ledger posts a journalEntryPosted event */

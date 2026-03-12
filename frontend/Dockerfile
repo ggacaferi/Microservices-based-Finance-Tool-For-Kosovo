@@ -23,6 +23,7 @@ RUN printf 'server {\n\
   resolver 127.0.0.11 valid=10s;\n\
   location /api/ {\n\
     set $gw gateway;\n\
+    proxy_set_header Host $http_host;\n\
     proxy_pass http://$gw:3000;\n\
   }\n\
   location / {\n\

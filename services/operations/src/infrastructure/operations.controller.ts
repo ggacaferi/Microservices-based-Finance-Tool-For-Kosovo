@@ -28,7 +28,7 @@ export class OperationsController {
       };
     }
     if (dto.entityType === 'invoice') {
-      const invoice = this.invoiceService.reverse(dto.entityId, dto.reason);
+      const invoice = await this.invoiceService.reverse(dto.entityId, dto.reason);
       return { ...invoice, totalNetAmount: this.invoiceService.totalNetAmount(invoice) };
     }
     return this.inventoryService.reverseMovement(dto.entityId, dto.reason);

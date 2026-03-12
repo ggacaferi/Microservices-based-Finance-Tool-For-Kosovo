@@ -79,7 +79,7 @@ export const DailyOpsPage: React.FC = () => {
     setBillLines(p => p.map((l, j) => j !== i ? l : { ...l, [f]: f === 'description' || f === 'taxCategoryId' ? v : Number(v) }));
 
   const createBill = () => wrap(async () => {
-    const res = await api.post<BillResponse>('/bills', { supplierId, issueDate, currency, lineItems: billLines });
+    const res = await api.post<BillResponse>('/bills/', { supplierId, issueDate, currency, lineItems: billLines });
     setActiveBill(res.data); setBillLookup(res.data.id); setStornoEntityId(res.data.id);
     await loadActivities(); msg('success', `Bill created: ${res.data.id}`);
   });
@@ -100,7 +100,7 @@ export const DailyOpsPage: React.FC = () => {
     setInvLines(p => p.map((l, j) => j !== i ? l : { ...l, [f]: f === 'description' ? v : Number(v) }));
 
   const createInvoice = () => wrap(async () => {
-    const res = await api.post<InvoiceResponse>('/invoices', { customerId, issueDate, currency, lines: invLines });
+    const res = await api.post<InvoiceResponse>('/invoices/', { customerId, issueDate, currency, lines: invLines });
     setActiveInvoice(res.data); setInvLookup(res.data.id); setStornoEntityId(res.data.id);
     await loadActivities(); msg('success', `Invoice created: ${res.data.id}`);
   });
@@ -124,7 +124,7 @@ export const DailyOpsPage: React.FC = () => {
 
   /* ── Inventory handlers ─────────────────────── */
   const recordMovement = () => wrap(async () => {
-    const mv = await api.post('/inventory/movements', { sku, description: itemDesc, type: mvType, quantity: mvQty, unitCost: mvUnitCost });
+    const mv = await api.post('/inventory/movements/', { sku, description: itemDesc, type: mvType, quantity: mvQty, unitCost: mvUnitCost });
     setStornoEntityId(mv.data.id); setStornoType('inventory');
     await Promise.all([loadValuation(), loadActivities()]);
     msg('success', `${mvType} recorded for ${sku}`);
@@ -133,7 +133,7 @@ export const DailyOpsPage: React.FC = () => {
   /* ── Storno ─────────────────────────────────── */
   const runStorno = () => wrap(async () => {
     if (!stornoEntityId) { msg('error', 'Please enter an Entity ID'); return; }
-    const res = await api.post('/operations/storno', { entityType: stornoType, entityId: stornoEntityId, reason: stornoReason });
+    const res = await api.post('/operations/storno/', { entityType: stornoType, entityId: stornoEntityId, reason: stornoReason });
     if (stornoType === 'bill')      setActiveBill(res.data);
     if (stornoType === 'invoice')   setActiveInvoice(res.data);
     await Promise.all([loadValuation(), loadActivities()]);

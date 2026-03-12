@@ -3,6 +3,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ComplianceClient } from './compliance/compliance.client';
 import { CrossServiceEventPublisher } from './events/cross-service-event.publisher';
 import { BillOrmEntity } from './infrastructure/persistence/bills/bill.orm-entity';
+import { InvoiceOrmEntity } from './infrastructure/persistence/invoices/invoice.orm-entity';
+import { InventoryMovementOrmEntity } from './infrastructure/persistence/inventory/inventory-movement.orm-entity';
 import { BillRepository } from './infrastructure/bill.repository';
 import { BillService } from './application/bills/bill.service';
 import { InvoiceService } from './application/invoices/invoice.service';
@@ -14,12 +16,13 @@ import { InventoryController } from './infrastructure/inventory.controller';
 import { OperationsController } from './infrastructure/operations.controller';
 
 const host = process.env.OPS_DB_HOST || process.env.POSTGRES_HOST;
+const entities = [BillOrmEntity, InvoiceOrmEntity, InventoryMovementOrmEntity];
 
 @Module({
   imports: [
     ...(host ? [
-      TypeOrmModule.forRoot({ name: 'operations', type: 'postgres', host, port: parseInt(process.env.OPS_DB_PORT || '5432', 10), username: process.env.OPS_DB_USER || 'guri', password: process.env.OPS_DB_PASSWORD || 'guri', database: process.env.OPS_DB_NAME || 'guri_operations', entities: [BillOrmEntity], synchronize: process.env.NODE_ENV !== 'production' }),
-      TypeOrmModule.forFeature([BillOrmEntity], 'operations'),
+      TypeOrmModule.forRoot({ name: 'operations', type: 'postgres', host, port: parseInt(process.env.OPS_DB_PORT || '5432', 10), username: process.env.OPS_DB_USER || 'guri', password: process.env.OPS_DB_PASSWORD || 'guri', database: process.env.OPS_DB_NAME || 'guri_operations', entities, synchronize: process.env.NODE_ENV !== 'production' }),
+      TypeOrmModule.forFeature(entities, 'operations'),
     ] : []),
   ],
   controllers: [BillsController, InvoicesController, InventoryController, OperationsController],
