@@ -1,0 +1,313 @@
+# ──────────────────────────────────────────────────────────
+# Postgres StatefulSets — One per bounded context
+# Each service gets its own database instance for full
+# data isolation as required by DDD bounded contexts.
+# ──────────────────────────────────────────────────────────
+
+# ── IAM Postgres ─────────────────────────────────────────
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: iam-postgres
+  namespace: guri-finance
+  labels:
+    app: iam-postgres
+    tier: database
+    context: iam
+spec:
+  serviceName: iam-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iam-postgres
+  template:
+    metadata:
+      labels:
+        app: iam-postgres
+        tier: database
+        context: iam
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: "guri_iam"
+            - name: POSTGRES_USER
+              value: "guri_iam"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secrets
+                  key: IAM_DB_PASSWORD
+          volumeMounts:
+            - name: iam-data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "guri_iam"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: iam-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iam-postgres
+  namespace: guri-finance
+spec:
+  selector:
+    app: iam-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+  clusterIP: None
+
+---
+# ── Operations Postgres ──────────────────────────────────
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ops-postgres
+  namespace: guri-finance
+  labels:
+    app: ops-postgres
+    tier: database
+    context: operations
+spec:
+  serviceName: ops-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ops-postgres
+  template:
+    metadata:
+      labels:
+        app: ops-postgres
+        tier: database
+        context: operations
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: "guri_operations"
+            - name: POSTGRES_USER
+              value: "guri_ops"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secrets
+                  key: OPS_DB_PASSWORD
+          volumeMounts:
+            - name: ops-data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "guri_ops"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: ops-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ops-postgres
+  namespace: guri-finance
+spec:
+  selector:
+    app: ops-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+  clusterIP: None
+
+---
+# ── Ledger Postgres ──────────────────────────────────────
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ledger-postgres
+  namespace: guri-finance
+  labels:
+    app: ledger-postgres
+    tier: database
+    context: ledger
+spec:
+  serviceName: ledger-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ledger-postgres
+  template:
+    metadata:
+      labels:
+        app: ledger-postgres
+        tier: database
+        context: ledger
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: "guri_ledger"
+            - name: POSTGRES_USER
+              value: "guri_ledger"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secrets
+                  key: LEDGER_DB_PASSWORD
+          volumeMounts:
+            - name: ledger-data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "guri_ledger"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: ledger-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-postgres
+  namespace: guri-finance
+spec:
+  selector:
+    app: ledger-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+  clusterIP: None
+
+---
+# ── AI Postgres (with pgvector) ──────────────────────────
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ai-postgres
+  namespace: guri-finance
+  labels:
+    app: ai-postgres
+    tier: database
+    context: ai
+spec:
+  serviceName: ai-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-postgres
+  template:
+    metadata:
+      labels:
+        app: ai-postgres
+        tier: database
+        context: ai
+    spec:
+      containers:
+        - name: postgres
+          # pgvector-enabled image for vector similarity search
+          image: pgvector/pgvector:pg16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: "guri_ai"
+            - name: POSTGRES_USER
+              value: "guri_ai"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secrets
+                  key: AI_DB_PASSWORD
+          volumeMounts:
+            - name: ai-data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "guri_ai"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: ai-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-postgres
+  namespace: guri-finance
+spec:
+  selector:
+    app: ai-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+  clusterIP: None

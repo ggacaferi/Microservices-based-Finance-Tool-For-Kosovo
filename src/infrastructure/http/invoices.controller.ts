@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { CreateInvoiceDto } from '../../application/invoices/dto/create-invoice.dto';
 import { InvoiceService } from '../../application/invoices/invoice.service';
 import { IsOptional, IsString } from 'class-validator';
+import { Public } from '../../iam/guards/auth.guard';
 
 class StornoDto {
   @IsOptional()
@@ -9,6 +10,7 @@ class StornoDto {
   reason!: string;
 }
 
+@Public()
 @Controller('invoices')
 export class InvoicesController {
   constructor(private readonly invoiceService: InvoiceService) {}

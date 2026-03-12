@@ -1,7 +1,8 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ComplianceService } from '../../compliance/application/compliance.service';
+import { ComplianceBundle, IComplianceSubscriber } from '../../compliance/domain/tax-taxonomy';
 
-// IDs aligned to Compliance "tax_definitions" JSON
-export type TaxCategoryId = '43' | '31' | '28';
+export type TaxCategoryId = string; // IDs sourced from ComplianceService (e.g. '43', '31', '28', '08')
 
 export interface TaxRule {
   id: TaxCategoryId;
@@ -10,23 +11,44 @@ export interface TaxRule {
 }
 
 /**
- * Local cache of rules defined by the ComplianceService.
- * Loaded at startup (hardcoded for now).
+ * TaxRuleService — Operations BC's local rule cache.
+ *
+ * Pattern: Push-based Rule Distribution
+ * - Fetches the full tax category bundle from ComplianceService ONCE at startup.
+ * - Registers as an IComplianceSubscriber so ComplianceService pushes updates
+ *   automatically whenever legislation changes (POST /compliance/refresh).
+ * - All other services (BillService via FaturaHyrëse aggregate) call THIS service
+ *   and never wait on ComplianceService per-transaction.
  */
 @Injectable()
-export class TaxRuleService implements OnModuleInit {
+export class TaxRuleService implements OnModuleInit, IComplianceSubscriber {
+  private readonly logger = new Logger(TaxRuleService.name);
   private readonly rules = new Map<TaxCategoryId, TaxRule>();
 
-  onModuleInit(): void {
-    const hardcoded: TaxRule[] = [
-      { id: '43', rate: 0.18, description: 'Standard VAT' },
-      { id: '31', rate: 0.0, description: 'Exempt (Blerjet pa TVSH)' },
-      { id: '28', rate: 0.0, description: 'Reverse Charge (Ngarkesa e Kundërt)' }
-    ];
+  constructor(private readonly complianceService: ComplianceService) {}
 
-    for (const rule of hardcoded) {
-      this.rules.set(rule.id, rule);
+  onModuleInit(): void {
+    // Register with ComplianceService — this also triggers an immediate
+    // onRulesUpdated() call so the cache is populated before any request arrives.
+    this.complianceService.registerSubscriber(this);
+  }
+
+  /**
+   * Called by ComplianceService on startup AND whenever rules change.
+   * Replaces the local cache atomically — zero downtime for in-flight requests.
+   */
+  onRulesUpdated(bundle: ComplianceBundle): void {
+    this.rules.clear();
+    for (const cat of bundle.taxCategories) {
+      this.rules.set(cat.id, {
+        id: cat.id,
+        rate: cat.rate,
+        description: cat.description,
+      });
     }
+    this.logger.log(
+      `Local tax rule cache updated to v${bundle.version}: ${this.rules.size} categories loaded`,
+    );
   }
 
   getAll(): TaxRule[] {

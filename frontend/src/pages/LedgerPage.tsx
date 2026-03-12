@@ -1,65 +1,204 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
 
 export const LedgerPage: React.FC = () => {
-  return (
-    <div className="content-grid">
-      <section className="card">
-        <header className="card-header">
-          <div>
-            <div className="card-title">General Ledger Service</div>
-            <div className="card-subtitle">
-              Double-entry bookkeeper enforcing Sum(Debits) = Sum(Credits).
-            </div>
-          </div>
-        </header>
-        <div className="stack">
-          <p className="muted">
-            This is the Ledger bounded context. It consumes domain events such
-            as <code>BillPosted</code> from Daily Operations and materializes
-            them into journal entries.
-          </p>
-          <ul className="muted">
-            <li>Receives <code>BillPosted</code> and creates a JournalEntry.</li>
-            <li>
-              Applies Storno logic to reverse incorrect entries while preserving
-              history.
-            </li>
-            <li>Produces financial statements and trial balances.</li>
-          </ul>
-          <p className="muted">
-            The UI here will eventually list journal entries, reversals, and
-            provide drill-downs from operations documents (bills, invoices) to
-            their accounting impact.
-          </p>
-        </div>
-      </section>
+  const [summary, setSummary] = useState<any>(null);
+  const [entries, setEntries] = useState<any[]>([]);
+  const [trialBalance, setTrialBalance] = useState<any[]>([]);
+  const [kindFilter, setKindFilter] = useState('');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [billIdLookup, setBillIdLookup] = useState('');
+  const [billWorkflow, setBillWorkflow] = useState<any>(null);
+  const [tab, setTab] = useState<'entries' | 'trial' | 'lookup'>('entries');
 
-      <section className="card">
-        <header className="card-header">
-          <div>
-            <div className="card-title">Event flow (conceptual)</div>
-            <div className="card-subtitle">
-              How Daily Operations and Ledger collaborate via events.
+  const loadAll = async () => {
+    try {
+      const [s, e, tb] = await Promise.all([
+        axios.get('/api/v1/ledger/summary'),
+        axios.get(`/api/v1/ledger/journal-entries${kindFilter ? `?kind=${kindFilter}` : ''}`),
+        axios.get('/api/v1/ledger/trial-balance'),
+      ]);
+      setSummary(s.data);
+      setEntries(e.data);
+      setTrialBalance(tb.data);
+    } catch { /* ignore */ }
+  };
+
+  const lookupBill = async () => {
+    if (!billIdLookup.trim()) return;
+    try {
+      const res = await axios.get(`/api/v1/ledger/bill/${billIdLookup.trim()}`);
+      setBillWorkflow(res.data);
+    } catch { setBillWorkflow(null); }
+  };
+
+  useEffect(() => { loadAll(); }, [kindFilter]);
+
+  return (
+    <div className="stack-lg">
+
+      {/* KPI summary */}
+      {summary && (
+        <div className="grid-auto">
+          {[
+            { label: 'Total Entries',    value: summary.totalEntries,    color: 'var(--blue-700)' },
+            { label: 'Original',         value: summary.originalEntries, color: 'var(--green-600)' },
+            { label: 'Storno',           value: summary.stornoEntries,   color: 'var(--amber-600)' },
+            { label: 'Total Debits',     value: `€${(summary.totalDebits ?? 0).toFixed(2)}`,  color: 'var(--slate-900)' },
+            { label: 'Total Credits',    value: `€${(summary.totalCredits ?? 0).toFixed(2)}`, color: 'var(--slate-900)' },
+          ].map(s => (
+            <div key={s.label} className="stat-card">
+              <div className="stat-label">{s.label}</div>
+              <div className="stat-value" style={{ color: s.color, fontSize: 22 }}>{s.value}</div>
             </div>
+          ))}
+          <div className="stat-card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+            <div className="stat-label">Books Status</div>
+            <span className={`badge ${summary.balanced ? 'badge-green' : 'badge-red'}`} style={{ fontSize: 13, padding: '4px 10px', marginTop: 8 }}>
+              {summary.balanced ? '✓ Balanced' : '✗ Imbalanced'}
+            </span>
           </div>
-        </header>
-        <div className="stack">
-          <ol className="muted">
-            <li>User posts a bill in Daily Operations.</li>
-            <li>
-              Operations emits <code>BillPosted</code> event with economic
-              details.
-            </li>
-            <li>
-              LedgerService subscribes, creates the corresponding JournalEntry,
-              enforces the double-entry invariant, and emits{' '}
-              <code>JournalEntryPosted</code>.
-            </li>
-            <li>AI and reporting contexts react to the new financial snapshot.</li>
-          </ol>
         </div>
-      </section>
+      )}
+
+      {/* Tabs */}
+      <div className="card">
+        <div className="card-header">
+          <div className="tabs" style={{ borderBottom: 'none', marginBottom: 0 }}>
+            <button className={`tab ${tab === 'entries' ? 'active' : ''}`} onClick={() => setTab('entries')}>Journal Entries</button>
+            <button className={`tab ${tab === 'trial'   ? 'active' : ''}`} onClick={() => setTab('trial')}>Trial Balance</button>
+            <button className={`tab ${tab === 'lookup'  ? 'active' : ''}`} onClick={() => setTab('lookup')}>Bill Lookup</button>
+          </div>
+          <div className="card-header-actions">
+            {tab === 'entries' && (
+              <select className="select" style={{ width: 140 }} value={kindFilter} onChange={e => setKindFilter(e.target.value)}>
+                <option value="">All Entries</option>
+                <option value="ORIGINAL">Original</option>
+                <option value="STORNO">Storno</option>
+              </select>
+            )}
+            <button className="btn btn-secondary btn-sm" onClick={loadAll}>↻ Refresh</button>
+          </div>
+        </div>
+
+        {/* Journal Entries tab */}
+        {tab === 'entries' && (
+          entries.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">📒</div>
+              <div className="empty-state-text">No journal entries yet</div>
+              <div className="empty-state-sub">Post a bill in Daily Operations to generate entries</div>
+            </div>
+          ) : (
+            <table className="erp-table">
+              <thead>
+                <tr>
+                  <th>Kind</th>
+                  <th>Reference</th>
+                  <th>Date</th>
+                  <th className="text-right">Amount</th>
+                  <th>Reversed By</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.map((e: any) => (
+                  <React.Fragment key={e.id}>
+                    <tr onClick={() => setExpandedId(expandedId === e.id ? null : e.id)} style={{ cursor: 'pointer' }}>
+                      <td>
+                        <span className={`badge ${e.kind === 'ORIGINAL' ? 'badge-green' : 'badge-amber'}`}>{e.kind}</span>
+                      </td>
+                      <td className="text-mono">{e.reference}</td>
+                      <td className="muted">{e.date}</td>
+                      <td className="col-amount">€{e.amount.toFixed(2)}</td>
+                      <td className="muted text-mono" style={{ fontSize: 11 }}>{e.reversedBy ? e.reversedBy.substring(0, 12) + '…' : '—'}</td>
+                    </tr>
+                    {expandedId === e.id && (
+                      <tr>
+                        <td colSpan={5} style={{ background: 'var(--blue-50)', padding: '12px 16px' }}>
+                          <div className="text-sm muted mb-2">Entry ID: {e.id}</div>
+                          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                            <thead>
+                              <tr>
+                                {['Account', 'Debit', 'Credit'].map(h => (
+                                  <th key={h} style={{ textAlign: h === 'Account' ? 'left' : 'right', fontSize: 11, fontWeight: 700, color: 'var(--slate-500)', padding: '4px 8px', borderBottom: '1px solid var(--slate-200)' }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {e.lines.map((l: any, i: number) => (
+                                <tr key={i}>
+                                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12, padding: '4px 8px' }}>{l.account}</td>
+                                  <td style={{ textAlign: 'right', padding: '4px 8px', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{l.debit > 0 ? `€${l.debit.toFixed(2)}` : '—'}</td>
+                                  <td style={{ textAlign: 'right', padding: '4px 8px', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{l.credit > 0 ? `€${l.credit.toFixed(2)}` : '—'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          )
+        )}
+
+        {/* Trial Balance tab */}
+        {tab === 'trial' && (
+          trialBalance.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">⚖️</div>
+              <div className="empty-state-text">No accounts to balance yet</div>
+            </div>
+          ) : (
+            <table className="erp-table">
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th className="text-right">Total Debits</th>
+                  <th className="text-right">Total Credits</th>
+                  <th className="text-right">Balance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trialBalance.map((tb: any) => (
+                  <tr key={tb.account}>
+                    <td className="text-mono fw-700">{tb.account}</td>
+                    <td className="col-amount">€{tb.totalDebit.toFixed(2)}</td>
+                    <td className="col-amount">€{tb.totalCredit.toFixed(2)}</td>
+                    <td className="col-amount" style={{ color: tb.balance >= 0 ? 'var(--green-600)' : 'var(--red-600)' }}>
+                      €{tb.balance.toFixed(2)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )
+        )}
+
+        {/* Bill Lookup tab */}
+        {tab === 'lookup' && (
+          <div className="card-body stack">
+            <div className="field-group">
+              <label className="field-label">Bill ID</label>
+              <div className="field-row">
+                <input className="input" placeholder="Paste bill UUID…" value={billIdLookup} onChange={e => setBillIdLookup(e.target.value)} onKeyDown={e => e.key === 'Enter' && lookupBill()} />
+                <button className="btn btn-primary" onClick={lookupBill} style={{ flexShrink: 0 }}>Look Up</button>
+              </div>
+            </div>
+            {billWorkflow && (
+              <div>
+                <div className="flex gap-2 mb-3">
+                  <span className="badge badge-blue">Reference: {billWorkflow.originalReference}</span>
+                  <span className="badge badge-slate">{billWorkflow.journalEntries?.length ?? 0} entries</span>
+                </div>
+                <div className="code-block">{JSON.stringify(billWorkflow, null, 2)}</div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 };
-

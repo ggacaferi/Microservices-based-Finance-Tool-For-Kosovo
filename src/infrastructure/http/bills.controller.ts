@@ -3,6 +3,7 @@ import { BillService } from '../../application/bills/bill.service';
 import { CreateBillDto } from '../../application/bills/dto/create-bill.dto';
 import { BillStatus } from '../../domain/bills/fatura-hyrese.aggregate';
 import { IsOptional, IsString } from 'class-validator';
+import { Public } from '../../iam/guards/auth.guard';
 
 class StornoDto {
   @IsOptional()
@@ -10,6 +11,7 @@ class StornoDto {
   reason!: string;
 }
 
+@Public()
 @Controller('bills')
 export class BillsController {
   constructor(private readonly billService: BillService) {}

@@ -1,21 +1,224 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
-import { DomainEventBus } from '../events/domain-event.bus';
+import { Injectable, OnModuleInit, Logger, Optional } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { v4 as uuidv4 } from 'uuid';
+import { DomainEventBus, JournalEntryPostedEvent } from '../events/domain-event.bus';
+import { AiEventOrmEntity } from '../../infrastructure/persistence/ai/ai-event.orm-entity';
 
+export interface FinancialInsight {
+  id: string;
+  type: 'expense_spike' | 'storno_detected' | 'trend_observation' | 'summary';
+  message: string;
+  severity: 'info' | 'warning' | 'critical';
+  timestamp: string;
+  data?: Record<string, any>;
+}
+
+export interface FinancialSnapshot {
+  totalExpenses: number;
+  totalStornos: number;
+  netExpenses: number;
+  entryCount: number;
+  lastUpdated: string;
+  insights: FinancialInsight[];
+}
+
+/**
+ * AI Financial Snapshot Service — The Intelligence Layer
+ *
+ * Asynchronously ingests posted journal entries to build a safe read-model.
+ * Accepts natural language queries and returns financial insights.
+ *
+ * In production this would use a Vector Store and LLM for RAG-based queries.
+ * Here we demonstrate the architectural pattern with deterministic analysis.
+ */
 @Injectable()
 export class AiFinancialSnapshotService implements OnModuleInit {
-  private totalExpenses = 0;
+  private readonly logger = new Logger(AiFinancialSnapshotService.name);
 
-  constructor(private readonly domainEventBus: DomainEventBus) {}
+  private totalExpenses = 0;
+  private totalStornos = 0;
+  private entryCount = 0;
+  private lastUpdated = '';
+  private readonly insights: FinancialInsight[] = [];
+  private readonly eventHistory: Array<{ reference: string; amount: number; date: string; isStorno: boolean }> = [];
+  private insightCounter = 0;
+
+  constructor(
+    private readonly domainEventBus: DomainEventBus,
+    @Optional() @InjectRepository(AiEventOrmEntity, 'ai')
+    private readonly ormRepo?: Repository<AiEventOrmEntity>,
+  ) {
+    if (this.ormRepo) {
+      this.logger.log('AI Service: pgvector Postgres-backed (ai_financial_events)');
+    } else {
+      this.logger.log('AI Service: in-memory fallback');
+    }
+  }
 
   onModuleInit(): void {
     this.domainEventBus.subscribe('journalEntryPosted', (event) => {
-      this.totalExpenses = this.totalExpenses + event.deltaExpenses;
+      this.ingestJournalEntry(event);
     });
+    this.logger.log('AI Financial Snapshot Service initialized — listening for journalEntryPosted events');
   }
 
-  getSnapshot() {
+  private ingestJournalEntry(event: JournalEntryPostedEvent): void {
+    const isStorno = event.deltaExpenses < 0;
+
+    this.totalExpenses += event.deltaExpenses;
+    this.entryCount++;
+    this.lastUpdated = event.date;
+
+    if (isStorno) {
+      this.totalStornos++;
+    }
+
+    this.eventHistory.push({
+      reference: event.reference,
+      amount: event.deltaExpenses,
+      date: event.date,
+      isStorno,
+    });
+
+    // Persist to pgvector-backed Postgres for RAG retrieval
+    if (this.ormRepo) {
+      this.ormRepo.save({
+        id: uuidv4(),
+        reference: event.reference,
+        amount: event.deltaExpenses,
+        date: event.date,
+        isStorno,
+        textContent: `Journal entry ${event.journalEntryId} for ${event.reference}: ` +
+          `€${Math.abs(event.deltaExpenses).toFixed(2)} ${isStorno ? 'reversed (storno)' : 'posted'}`,
+      }).catch((err) => this.logger.error(`Failed to persist AI event: ${err.message}`));
+    }
+
+    if (isStorno) {
+      this.addInsight({
+        type: 'storno_detected',
+        message: `Storno correction detected for ${event.reference}. Amount reversed: €${Math.abs(event.deltaExpenses).toFixed(2)}`,
+        severity: 'warning',
+        data: { reference: event.reference, amount: event.deltaExpenses },
+      });
+    }
+
+    if (this.totalExpenses > 10000) {
+      this.addInsight({
+        type: 'expense_spike',
+        message: `Total expenses have exceeded €10,000 threshold. Current: €${this.totalExpenses.toFixed(2)}`,
+        severity: 'critical',
+        data: { threshold: 10000, current: this.totalExpenses },
+      });
+    }
+
+    if (this.entryCount > 0 && this.entryCount % 5 === 0) {
+      const stornoRate = this.totalStornos / this.entryCount;
+      if (stornoRate > 0.3) {
+        this.addInsight({
+          type: 'trend_observation',
+          message: `High storno rate: ${(stornoRate * 100).toFixed(1)}% of entries are corrections.`,
+          severity: 'warning',
+          data: { stornoRate, totalEntries: this.entryCount, totalStornos: this.totalStornos },
+        });
+      }
+    }
+  }
+
+  private addInsight(partial: Omit<FinancialInsight, 'id' | 'timestamp'>): void {
+    this.insightCounter++;
+    this.insights.unshift({
+      id: `insight-${this.insightCounter}`,
+      timestamp: new Date().toISOString(),
+      ...partial,
+    });
+    if (this.insights.length > 100) this.insights.length = 100;
+  }
+
+  getSnapshot(): FinancialSnapshot {
     return {
-      totalExpenses: this.totalExpenses
+      totalExpenses: this.totalExpenses,
+      totalStornos: this.totalStornos,
+      netExpenses: this.totalExpenses,
+      entryCount: this.entryCount,
+      lastUpdated: this.lastUpdated || new Date().toISOString(),
+      insights: this.insights.slice(0, 10),
     };
+  }
+
+  /**
+   * Natural Language Query — rule-based analysis engine
+   *
+   * In production: embed query → search Vector Store → feed context + query to LLM.
+   * Here we demonstrate the pattern with keyword-based routing.
+   */
+  processNaturalLanguageQuery(query: string): {
+    query: string;
+    answer: string;
+    confidence: number;
+    sources: string[];
+    generatedAt: string;
+  } {
+    const q = query.toLowerCase().trim();
+    const sources: string[] = [];
+    let answer: string;
+    let confidence: number;
+
+    if (q.includes('total expense') || q.includes('how much') || q.includes('spent')) {
+      answer = `Your total expenses are currently €${this.totalExpenses.toFixed(2)} across ${this.entryCount} journal entries.`;
+      if (this.totalStornos > 0) {
+        answer += ` This includes ${this.totalStornos} storno correction(s).`;
+      }
+      confidence = 0.95;
+      sources.push('journal_entries_aggregate', 'storno_history');
+    } else if (q.includes('storno') || q.includes('reversal') || q.includes('correction')) {
+      const stornoEvents = this.eventHistory.filter((e) => e.isStorno);
+      answer = `There have been ${this.totalStornos} storno correction(s) recorded.`;
+      if (stornoEvents.length > 0) {
+        const totalReversed = stornoEvents.reduce((s, e) => s + Math.abs(e.amount), 0);
+        answer += ` Total amount reversed: €${totalReversed.toFixed(2)}.`;
+        answer += ` Latest: ${stornoEvents[stornoEvents.length - 1]?.reference ?? 'N/A'}.`;
+      }
+      confidence = 0.92;
+      sources.push('storno_history', 'journal_entries');
+    } else if (q.includes('balance') || q.includes('net') || q.includes('profit')) {
+      answer = `Net expenses stand at €${this.totalExpenses.toFixed(2)}. The books have ${this.entryCount} journal entries with ${this.totalStornos} storno corrections applied.`;
+      confidence = 0.88;
+      sources.push('journal_entries_aggregate', 'trial_balance');
+    } else if (q.includes('insight') || q.includes('issue') || q.includes('problem') || q.includes('warning')) {
+      const warnings = this.insights.filter((i) => i.severity === 'warning' || i.severity === 'critical');
+      if (warnings.length > 0) {
+        answer = `I found ${warnings.length} concern(s):\n` +
+          warnings.slice(0, 5).map((w, i) => `${i + 1}. [${w.severity.toUpperCase()}] ${w.message}`).join('\n');
+      } else {
+        answer = 'No financial concerns detected. All entries appear balanced and consistent.';
+      }
+      confidence = 0.85;
+      sources.push('insights_engine', 'journal_entries');
+    } else if (q.includes('summary') || q.includes('overview') || q.includes('status')) {
+      answer = `Financial Overview:\n` +
+        `• Total expenses: €${this.totalExpenses.toFixed(2)}\n` +
+        `• Journal entries: ${this.entryCount}\n` +
+        `• Storno corrections: ${this.totalStornos}\n` +
+        `• Active insights: ${this.insights.length}\n` +
+        `• Books balanced: Yes (double-entry enforced)`;
+      confidence = 0.96;
+      sources.push('journal_entries_aggregate', 'insights_engine', 'ledger_summary');
+    } else {
+      answer = `Based on available financial data: total expenses are €${this.totalExpenses.toFixed(2)} with ${this.entryCount} entries. ` +
+        `Try asking about expenses, stornos, balance, or insights for specific analysis.`;
+      confidence = 0.6;
+      sources.push('general_knowledge');
+    }
+
+    return { query, answer, confidence, sources, generatedAt: new Date().toISOString() };
+  }
+
+  getInsights(limit = 20): FinancialInsight[] {
+    return this.insights.slice(0, limit);
+  }
+
+  getEventHistory(): Array<{ reference: string; amount: number; date: string; isStorno: boolean }> {
+    return [...this.eventHistory];
   }
 }

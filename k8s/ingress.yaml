@@ -1,0 +1,45 @@
+# ──────────────────────────────────────────────────────────
+# Ingress — GKE Ingress Controller
+# Routes external traffic to frontend + API gateway
+# ──────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: guri-finance-ingress
+  namespace: guri-finance
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    networking.gke.io/managed-certificates: "guri-cert"
+    kubernetes.io/ingress.global-static-ip-name: "guri-finance-ip"
+spec:
+  rules:
+    - host: guri.finance
+      http:
+        paths:
+          # API routes → backend
+          - path: /api/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 3000
+          # Everything else → frontend
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+
+---
+# Managed TLS certificate (GKE)
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: guri-cert
+  namespace: guri-finance
+spec:
+  domains:
+    - guri.finance

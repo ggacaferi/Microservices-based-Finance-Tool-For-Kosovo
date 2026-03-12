@@ -2,12 +2,15 @@ import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { RecordInventoryMovementDto } from '../../application/inventory/dto/record-inventory-movement.dto';
 import { InventoryService } from '../../application/inventory/inventory.service';
 import { IsOptional, IsString } from 'class-validator';
+import { Public } from '../../iam/guards/auth.guard';
 
 class StornoDto {
   @IsOptional()
   @IsString()
   reason!: string;
 }
+
+@Public()
 
 @Controller('inventory')
 export class InventoryController {

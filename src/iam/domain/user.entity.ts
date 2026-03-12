@@ -1,0 +1,112 @@
+import { v4 as uuidv4 } from 'uuid';
+
+export type UserRole = 'admin' | 'accountant' | 'auditor' | 'viewer';
+
+export interface CreateUserProps {
+  email: string;
+  password: string;
+  fullName: string;
+  tenantId: string;
+  role?: UserRole;
+}
+
+export class User {
+  readonly id: string;
+  readonly email: string;
+  readonly tenantId: string;
+  readonly fullName: string;
+  readonly role: UserRole;
+  readonly createdAt: string;
+
+  private _passwordHash: string;
+  private _active: boolean;
+
+  private constructor(
+    id: string,
+    email: string,
+    passwordHash: string,
+    fullName: string,
+    tenantId: string,
+    role: UserRole,
+    active: boolean,
+    createdAt: string,
+  ) {
+    this.id = id;
+    this.email = email;
+    this._passwordHash = passwordHash;
+    this.fullName = fullName;
+    this.tenantId = tenantId;
+    this.role = role;
+    this._active = active;
+    this.createdAt = createdAt;
+  }
+
+  static create(props: CreateUserProps): User {
+    if (!props.email || !props.email.includes('@')) {
+      throw new Error('A valid email is required.');
+    }
+    if (!props.password || props.password.length < 6) {
+      throw new Error('Password must be at least 6 characters.');
+    }
+    if (!props.fullName || !props.fullName.trim()) {
+      throw new Error('Full name is required.');
+    }
+    if (!props.tenantId || !props.tenantId.trim()) {
+      throw new Error('Tenant ID is required.');
+    }
+
+    // Simple hash for demo (in production: bcrypt/argon2)
+    const hash = Buffer.from(props.password).toString('base64');
+
+    return new User(
+      uuidv4(),
+      props.email.toLowerCase().trim(),
+      hash,
+      props.fullName.trim(),
+      props.tenantId.trim(),
+      props.role ?? 'viewer',
+      true,
+      new Date().toISOString(),
+    );
+  }
+
+  static rehydrate(
+    id: string,
+    email: string,
+    passwordHash: string,
+    fullName: string,
+    tenantId: string,
+    role: UserRole,
+    active: boolean,
+    createdAt: string,
+  ): User {
+    return new User(id, email, passwordHash, fullName, tenantId, role, active, createdAt);
+  }
+
+  get passwordHash(): string {
+    return this._passwordHash;
+  }
+
+  get active(): boolean {
+    return this._active;
+  }
+
+  verifyPassword(plaintext: string): boolean {
+    const hash = Buffer.from(plaintext).toString('base64');
+    return this._passwordHash === hash;
+  }
+
+  deactivate(): void {
+    this._active = false;
+  }
+
+  hasPermission(requiredRole: UserRole): boolean {
+    const hierarchy: Record<UserRole, number> = {
+      admin: 40,
+      accountant: 30,
+      auditor: 20,
+      viewer: 10,
+    };
+    return hierarchy[this.role] >= hierarchy[requiredRole];
+  }
+}

@@ -1,0 +1,64 @@
+# ── Shared ConfigMap for all services ────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: guri-finance-config
+  namespace: guri-finance
+data:
+  NODE_ENV: "production"
+  PUBSUB_ENABLED: "true"
+  GOOGLE_CLOUD_PROJECT: "guri-finance-prod"
+  JWT_SECRET: "change-me-in-production-use-k8s-secrets"
+  DB_LOGGING: "false"
+
+---
+# ── IAM Database Credentials ────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: iam-db-config
+  namespace: guri-finance
+data:
+  IAM_DB_HOST: "iam-postgres"
+  IAM_DB_PORT: "5432"
+  IAM_DB_NAME: "guri_iam"
+  IAM_DB_USER: "guri_iam"
+
+---
+# ── Operations Database Credentials ─────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ops-db-config
+  namespace: guri-finance
+data:
+  OPS_DB_HOST: "ops-postgres"
+  OPS_DB_PORT: "5432"
+  OPS_DB_NAME: "guri_operations"
+  OPS_DB_USER: "guri_ops"
+
+---
+# ── Ledger Database Credentials ─────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ledger-db-config
+  namespace: guri-finance
+data:
+  LEDGER_DB_HOST: "ledger-postgres"
+  LEDGER_DB_PORT: "5432"
+  LEDGER_DB_NAME: "guri_ledger"
+  LEDGER_DB_USER: "guri_ledger"
+
+---
+# ── AI Database Credentials (pgvector) ──────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-db-config
+  namespace: guri-finance
+data:
+  AI_DB_HOST: "ai-postgres"
+  AI_DB_PORT: "5432"
+  AI_DB_NAME: "guri_ai"
+  AI_DB_USER: "guri_ai"

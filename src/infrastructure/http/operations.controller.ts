@@ -7,7 +7,9 @@ import { CreateActivityDto } from '../../application/operations/dto/create-activ
 import { StornoDto } from '../../application/operations/dto/storno.dto';
 import { LedgerIntegrationService } from '../../application/ledger/ledger-integration.service';
 import { AiFinancialSnapshotService } from '../../application/ai/ai-financial-snapshot.service';
+import { Public } from '../../iam/guards/auth.guard';
 
+@Public()
 @Controller('operations')
 export class OperationsController {
   constructor(

@@ -1,5 +1,611 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+
+/* ─── Types ────────────────────────────────────────────── */
+interface BillLineForm   { description: string; quantity: number; unitPrice: number; taxCategoryId: string; }
+interface InvoiceLineForm { description: string; quantity: number; unitPrice: number; }
+interface BillResponse   { id: string; supplierId: string; issueDate: string; dueDate?: string | null; currency: string; status: string; totalNetAmount: number; lines: any[]; workflow?: any; }
+interface InvoiceResponse { id: string; customerId: string; issueDate: string; dueDate?: string | null; currency: string; status: string; totalNetAmount: number; lines: any[]; }
+interface InventoryValuation { totalValue: number; items: any[]; movements: any[]; }
+interface ActivityEntry { id: string; type: string; entityId?: string; summary: string; at: string; }
+
+const emptyBillLine: BillLineForm    = { description: '', quantity: 1, unitPrice: 0, taxCategoryId: '43' };
+const emptyInvLine: InvoiceLineForm  = { description: '', quantity: 1, unitPrice: 0 };
+
+const statusBadge = (s: string) => {
+  if (s === 'POSTED' || s === 'SENT' || s === 'PAID') return 'badge-green';
+  if (s === 'DRAFT') return 'badge-amber';
+  if (s === 'REVERTED' || s === 'REVERSED') return 'badge-red';
+  return 'badge-slate';
+};
+
+/* ─── Component ────────────────────────────────────────── */
+export const DailyOpsPage: React.FC = () => {
+  const [tab, setTab] = useState<'bills' | 'invoices' | 'inventory' | 'storno' | 'activity'>('bills');
+
+  /* Bills */
+  const [supplierId, setSupplierId]   = useState('SUP-1');
+  const [issueDate,  setIssueDate]    = useState(new Date().toISOString().slice(0, 10));
+  const [currency,   setCurrency]     = useState('EUR');
+  const [billLines,  setBillLines]    = useState<BillLineForm[]>([emptyBillLine]);
+  const [activeBill, setActiveBill]   = useState<BillResponse | null>(null);
+  const [billLookup, setBillLookup]   = useState('');
+
+  /* Invoices */
+  const [customerId,    setCustomerId]    = useState('CUS-1');
+  const [invLines,      setInvLines]      = useState<InvoiceLineForm[]>([emptyInvLine]);
+  const [activeInvoice, setActiveInvoice] = useState<InvoiceResponse | null>(null);
+  const [invLookup,     setInvLookup]     = useState('');
+
+  /* Inventory */
+  const [sku,          setSku]          = useState('SKU-1');
+  const [itemDesc,     setItemDesc]     = useState('Office item');
+  const [mvType,       setMvType]       = useState<'RECEIPT' | 'ISSUE'>('RECEIPT');
+  const [mvQty,        setMvQty]        = useState(1);
+  const [mvUnitCost,   setMvUnitCost]   = useState(10);
+  const [valuation,    setValuation]    = useState<InventoryValuation | null>(null);
+
+  /* Storno */
+  const [stornoType,     setStornoType]     = useState<'bill' | 'invoice' | 'inventory'>('bill');
+  const [stornoEntityId, setStornoEntityId] = useState('');
+  const [stornoReason,   setStornoReason]   = useState('Correction of erroneous entry');
+
+  /* Shared */
+  const [activities,   setActivities]  = useState<ActivityEntry[]>([]);
+  const [loading,      setLoading]     = useState(false);
+  const [error,        setError]       = useState<string | null>(null);
+  const [success,      setSuccess]     = useState<string | null>(null);
+
+  const api = axios.create({ baseURL: '/api/v1' });
+
+  const msg = (type: 'success' | 'error', text: string) => {
+    if (type === 'success') { setSuccess(text); setError(null); }
+    else                    { setError(text);   setSuccess(null); }
+    setTimeout(() => { setSuccess(null); setError(null); }, 6000);
+  };
+
+  const wrap = async (fn: () => Promise<void>) => {
+    setLoading(true); setError(null); setSuccess(null);
+    try { await fn(); }
+    catch (e: any) {
+      const m = e?.response?.data?.message;
+      msg('error', Array.isArray(m) ? m.join(', ') : m ?? e.message ?? 'Request failed');
+    }
+    finally { setLoading(false); }
+  };
+
+  /* ── Bill handlers ──────────────────────────── */
+  const editBillLine = (i: number, f: keyof BillLineForm, v: string) =>
+    setBillLines(p => p.map((l, j) => j !== i ? l : { ...l, [f]: f === 'description' || f === 'taxCategoryId' ? v : Number(v) }));
+
+  const createBill = () => wrap(async () => {
+    const res = await api.post<BillResponse>('/bills', { supplierId, issueDate, currency, lineItems: billLines });
+    setActiveBill(res.data); setBillLookup(res.data.id); setStornoEntityId(res.data.id);
+    await loadActivities(); msg('success', `Bill created: ${res.data.id}`);
+  });
+
+  const postBill = () => wrap(async () => {
+    if (!activeBill) return;
+    const res = await api.post<BillResponse>(`/bills/${activeBill.id}/post`);
+    setActiveBill(res.data); await loadActivities(); msg('success', 'Bill posted — journal entry created in Ledger');
+  });
+
+  const fetchBill = () => wrap(async () => {
+    const res = await api.get<BillResponse>(`/bills/${billLookup}`);
+    setActiveBill(res.data); setStornoEntityId(res.data.id);
+  });
+
+  /* ── Invoice handlers ───────────────────────── */
+  const editInvLine = (i: number, f: keyof InvoiceLineForm, v: string) =>
+    setInvLines(p => p.map((l, j) => j !== i ? l : { ...l, [f]: f === 'description' ? v : Number(v) }));
+
+  const createInvoice = () => wrap(async () => {
+    const res = await api.post<InvoiceResponse>('/invoices', { customerId, issueDate, currency, lines: invLines });
+    setActiveInvoice(res.data); setInvLookup(res.data.id); setStornoEntityId(res.data.id);
+    await loadActivities(); msg('success', `Invoice created: ${res.data.id}`);
+  });
+
+  const sendInvoice = () => wrap(async () => {
+    if (!activeInvoice) return;
+    const res = await api.post<InvoiceResponse>(`/invoices/${activeInvoice.id}/send`);
+    setActiveInvoice(res.data); await loadActivities(); msg('success', 'Invoice sent');
+  });
+
+  const payInvoice = () => wrap(async () => {
+    if (!activeInvoice) return;
+    const res = await api.post<InvoiceResponse>(`/invoices/${activeInvoice.id}/pay`);
+    setActiveInvoice(res.data); await loadActivities(); msg('success', 'Invoice marked as paid');
+  });
+
+  const fetchInvoice = () => wrap(async () => {
+    const res = await api.get<InvoiceResponse>(`/invoices/${invLookup}`);
+    setActiveInvoice(res.data); setStornoEntityId(res.data.id);
+  });
+
+  /* ── Inventory handlers ─────────────────────── */
+  const recordMovement = () => wrap(async () => {
+    const mv = await api.post('/inventory/movements', { sku, description: itemDesc, type: mvType, quantity: mvQty, unitCost: mvUnitCost });
+    setStornoEntityId(mv.data.id); setStornoType('inventory');
+    await Promise.all([loadValuation(), loadActivities()]);
+    msg('success', `${mvType} recorded for ${sku}`);
+  });
+
+  /* ── Storno ─────────────────────────────────── */
+  const runStorno = () => wrap(async () => {
+    if (!stornoEntityId) { msg('error', 'Please enter an Entity ID'); return; }
+    const res = await api.post('/operations/storno', { entityType: stornoType, entityId: stornoEntityId, reason: stornoReason });
+    if (stornoType === 'bill')      setActiveBill(res.data);
+    if (stornoType === 'invoice')   setActiveInvoice(res.data);
+    await Promise.all([loadValuation(), loadActivities()]);
+    msg('success', `Storno applied for ${stornoType} ${stornoEntityId}`);
+  });
+
+  /* ── Loaders ────────────────────────────────── */
+  const loadActivities = async () => {
+    const res = await api.get<ActivityEntry[]>('/operations/activities?limit=15');
+    setActivities(res.data);
+  };
+  const loadValuation = async () => {
+    const res = await api.get<InventoryValuation>('/inventory/valuation');
+    setValuation(res.data);
+  };
+
+  useEffect(() => {
+    loadActivities().catch(() => {});
+    loadValuation().catch(() => {});
+  }, []);
+
+  /* ── Render ─────────────────────────────────── */
+  return (
+    <div className="stack-lg">
+      {/* Alerts */}
+      {error   && <div className="alert alert-error">{error}</div>}
+      {success && <div className="alert alert-success">{success}</div>}
+
+      {/* Tabs */}
+      <div className="tabs">
+        {(['bills', 'invoices', 'inventory', 'storno', 'activity'] as const).map(t => (
+          <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
+            {{ bills: '🧾 Bills', invoices: '📄 Invoices', inventory: '📦 Inventory', storno: '↩ Storno', activity: '🕐 Activity' }[t]}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Bills tab ──────────────────────────── */}
+      {tab === 'bills' && (
+        <div className="grid-2">
+          {/* Create bill */}
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <div className="card-title">New Supplier Bill</div>
+                <div className="card-subtitle">Fatura Hyrëse — Accounts Payable</div>
+              </div>
+            </div>
+            <div className="card-body form-section">
+              <div className="field-row">
+                <div className="field-group" style={{ flex: 1 }}>
+                  <label className="field-label">Supplier ID</label>
+                  <input className="input" value={supplierId} onChange={e => setSupplierId(e.target.value)} />
+                </div>
+                <div className="field-group">
+                  <label className="field-label">Issue Date</label>
+                  <input className="input" type="date" value={issueDate} onChange={e => setIssueDate(e.target.value)} />
+                </div>
+                <div className="field-group" style={{ width: 100 }}>
+                  <label className="field-label">Currency</label>
+                  <select className="select" value={currency} onChange={e => setCurrency(e.target.value)}>
+                    <option value="EUR">EUR</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <div className="field-label mb-2">Line Items</div>
+                <table className="lines-table">
+                  <thead>
+                    <tr>
+                      <th>Description</th>
+                      <th style={{ width: 90 }}>Qty</th>
+                      <th style={{ width: 110 }}>Unit Price</th>
+                      <th style={{ width: 160 }}>VAT Category</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {billLines.map((l, i) => (
+                      <tr key={i}>
+                        <td><input className="input" placeholder="Item description" value={l.description} onChange={e => editBillLine(i, 'description', e.target.value)} /></td>
+                        <td><input className="input" type="number" value={l.quantity}  onChange={e => editBillLine(i, 'quantity',  e.target.value)} /></td>
+                        <td><input className="input" type="number" value={l.unitPrice} onChange={e => editBillLine(i, 'unitPrice', e.target.value)} /></td>
+                        <td>
+                          <select className="select" value={l.taxCategoryId} onChange={e => editBillLine(i, 'taxCategoryId', e.target.value)}>
+                            <option value="43">43 · Standard 18%</option>
+                            <option value="31">31 · Exempt 0%</option>
+                            <option value="28">28 · Reverse Charge</option>
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <button className="btn btn-secondary btn-sm mt-3" onClick={() => setBillLines(p => [...p, emptyBillLine])}>+ Add Line</button>
+              </div>
+
+              <div className="btn-group">
+                <button className="btn btn-primary" onClick={createBill} disabled={loading}>
+                  {loading ? 'Working…' : 'Create Draft Bill'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Bill lifecycle */}
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <div className="card-title">Bill Lifecycle</div>
+                <div className="card-subtitle">Load, post, and inspect a bill's accounting impact</div>
+              </div>
+            </div>
+            <div className="card-body form-section">
+              <div className="field-row">
+                <div className="field-group" style={{ flex: 1 }}>
+                  <label className="field-label">Bill ID</label>
+                  <input className="input" placeholder="Paste UUID…" value={billLookup} onChange={e => setBillLookup(e.target.value)} />
+                </div>
+                <button className="btn btn-secondary" style={{ alignSelf: 'flex-end' }} onClick={fetchBill} disabled={loading}>Load</button>
+                <button className="btn btn-primary"   style={{ alignSelf: 'flex-end' }} onClick={postBill}  disabled={loading || !activeBill || activeBill.status !== 'DRAFT'}>Post</button>
+              </div>
+
+              {activeBill ? (
+                <div className="stack">
+                  <div className="flex gap-2">
+                    <span className={`badge ${statusBadge(activeBill.status)}`}>{activeBill.status}</span>
+                    <span className="badge badge-slate">€{(activeBill.totalNetAmount ?? 0).toFixed(2)} {activeBill.currency}</span>
+                    <span className="badge badge-blue">Supplier: {activeBill.supplierId}</span>
+                  </div>
+
+                  <table className="erp-table">
+                    <thead><tr><th>Description</th><th className="text-right">Qty</th><th className="text-right">Unit Price</th><th className="text-right">Net</th></tr></thead>
+                    <tbody>
+                      {activeBill.lines?.map((l: any, i: number) => (
+                        <tr key={i}>
+                          <td>{l.description}</td>
+                          <td className="col-amount">{l.quantity}</td>
+                          <td className="col-amount">€{l.unitPrice?.toFixed(2)}</td>
+                          <td className="col-amount">€{(l.quantity * l.unitPrice)?.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+
+                  {activeBill.workflow && (
+                    <div className="alert alert-info">
+                      <div>
+                        <div style={{ fontWeight: 600, marginBottom: 4 }}>Storno Workflow</div>
+                        <div>Event: <strong>{activeBill.workflow.event?.type}</strong></div>
+                        <div>Ledger entries: {activeBill.workflow.ledger?.journalEntries?.length ?? 0}</div>
+                        <div>AI snapshot expenses: €{activeBill.workflow.aiSnapshot?.totalExpenses?.toFixed(2) ?? '0.00'}</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="empty-state" style={{ padding: 20 }}>
+                  <div className="empty-state-icon">🧾</div>
+                  <div className="empty-state-text">No bill loaded</div>
+                  <div className="empty-state-sub">Create a bill or paste an ID above</div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Invoices tab ───────────────────────── */}
+      {tab === 'invoices' && (
+        <div className="grid-2">
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <div className="card-title">New Customer Invoice</div>
+                <div className="card-subtitle">Fatura Dalëse — Accounts Receivable</div>
+              </div>
+            </div>
+            <div className="card-body form-section">
+              <div className="field-row">
+                <div className="field-group" style={{ flex: 1 }}>
+                  <label className="field-label">Customer ID</label>
+                  <input className="input" value={customerId} onChange={e => setCustomerId(e.target.value)} />
+                </div>
+                <div className="field-group">
+                  <label className="field-label">Issue Date</label>
+                  <input className="input" type="date" value={issueDate} onChange={e => setIssueDate(e.target.value)} />
+                </div>
+              </div>
+
+              <div>
+                <div className="field-label mb-2">Line Items</div>
+                <table className="lines-table">
+                  <thead>
+                    <tr>
+                      <th>Description</th>
+                      <th style={{ width: 90 }}>Qty</th>
+                      <th style={{ width: 110 }}>Unit Price</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invLines.map((l, i) => (
+                      <tr key={i}>
+                        <td><input className="input" placeholder="Service description" value={l.description} onChange={e => editInvLine(i, 'description', e.target.value)} /></td>
+                        <td><input className="input" type="number" value={l.quantity}  onChange={e => editInvLine(i, 'quantity',  e.target.value)} /></td>
+                        <td><input className="input" type="number" value={l.unitPrice} onChange={e => editInvLine(i, 'unitPrice', e.target.value)} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <button className="btn btn-secondary btn-sm mt-3" onClick={() => setInvLines(p => [...p, emptyInvLine])}>+ Add Line</button>
+              </div>
+
+              <div className="btn-group">
+                <button className="btn btn-primary" onClick={createInvoice} disabled={loading}>Create Invoice</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <div className="card-title">Invoice Lifecycle</div>
+                <div className="card-subtitle">Draft → Sent → Paid</div>
+              </div>
+            </div>
+            <div className="card-body form-section">
+              <div className="field-row">
+                <div className="field-group" style={{ flex: 1 }}>
+                  <label className="field-label">Invoice ID</label>
+                  <input className="input" placeholder="Paste UUID…" value={invLookup} onChange={e => setInvLookup(e.target.value)} />
+                </div>
+                <button className="btn btn-secondary" style={{ alignSelf: 'flex-end' }} onClick={fetchInvoice} disabled={loading}>Load</button>
+              </div>
+
+              {activeInvoice ? (
+                <div className="stack">
+                  <div className="flex gap-2">
+                    <span className={`badge ${statusBadge(activeInvoice.status)}`}>{activeInvoice.status}</span>
+                    <span className="badge badge-slate">€{(activeInvoice.totalNetAmount ?? 0).toFixed(2)} {activeInvoice.currency}</span>
+                  </div>
+
+                  <table className="erp-table">
+                    <thead><tr><th>Description</th><th className="text-right">Qty</th><th className="text-right">Net</th></tr></thead>
+                    <tbody>
+                      {activeInvoice.lines?.map((l: any, i: number) => (
+                        <tr key={i}>
+                          <td>{l.description}</td>
+                          <td className="col-amount">{l.quantity}</td>
+                          <td className="col-amount">€{(l.quantity * l.unitPrice)?.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+
+                  <div className="btn-group">
+                    <button className="btn btn-secondary" onClick={sendInvoice} disabled={loading || activeInvoice.status !== 'DRAFT'}>Send Invoice</button>
+                    <button className="btn btn-success"  onClick={payInvoice}  disabled={loading || activeInvoice.status !== 'SENT'}>Mark as Paid</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="empty-state" style={{ padding: 20 }}>
+                  <div className="empty-state-icon">📄</div>
+                  <div className="empty-state-text">No invoice loaded</div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Inventory tab ───────────────────────── */}
+      {tab === 'inventory' && (
+        <div className="grid-2">
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <div className="card-title">Record Movement</div>
+                <div className="card-subtitle">Weighted-average cost method</div>
+              </div>
+            </div>
+            <div className="card-body form-section">
+              <div className="grid-2">
+                <div className="field-group">
+                  <label className="field-label">SKU</label>
+                  <input className="input" value={sku} onChange={e => setSku(e.target.value)} placeholder="e.g. SKU-001" />
+                </div>
+                <div className="field-group">
+                  <label className="field-label">Description</label>
+                  <input className="input" value={itemDesc} onChange={e => setItemDesc(e.target.value)} placeholder="Item name" />
+                </div>
+                <div className="field-group">
+                  <label className="field-label">Movement Type</label>
+                  <select className="select" value={mvType} onChange={e => setMvType(e.target.value as any)}>
+                    <option value="RECEIPT">Receipt (IN)</option>
+                    <option value="ISSUE">Issue (OUT)</option>
+                  </select>
+                </div>
+                <div className="field-group">
+                  <label className="field-label">Quantity</label>
+                  <input className="input" type="number" value={mvQty} onChange={e => setMvQty(Number(e.target.value))} />
+                </div>
+                <div className="field-group">
+                  <label className="field-label">Unit Cost (€)</label>
+                  <input className="input" type="number" value={mvUnitCost} onChange={e => setMvUnitCost(Number(e.target.value))} />
+                </div>
+              </div>
+              <div>
+                <button className="btn btn-primary" onClick={recordMovement} disabled={loading}>Record Movement</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <div className="card-title">Inventory Valuation</div>
+                <div className="card-subtitle">Current stock value by SKU</div>
+              </div>
+              <button className="btn btn-secondary btn-sm" onClick={loadValuation}>↻</button>
+            </div>
+            {valuation ? (
+              <>
+                <div style={{ padding: '12px 20px', background: 'var(--blue-50)', borderBottom: '1px solid var(--blue-100)' }}>
+                  <span className="muted">Total inventory value: </span>
+                  <strong style={{ color: 'var(--blue-700)', fontSize: 16 }}>€{valuation.totalValue.toFixed(2)}</strong>
+                </div>
+                <table className="erp-table">
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th>Description</th>
+                      <th className="text-right">Qty on Hand</th>
+                      <th className="text-right">Avg Cost</th>
+                      <th className="text-right">Value</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {valuation.items.map((item: any) => (
+                      <tr key={item.sku}>
+                        <td className="text-mono fw-700">{item.sku}</td>
+                        <td>{item.description}</td>
+                        <td className="col-amount">{item.quantityOnHand}</td>
+                        <td className="col-amount">€{item.averageUnitCost.toFixed(2)}</td>
+                        <td className="col-amount">€{(item.quantityOnHand * item.averageUnitCost).toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            ) : (
+              <div className="empty-state"><div className="empty-state-icon">📦</div><div className="empty-state-text">No inventory yet</div></div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Storno tab ──────────────────────────── */}
+      {tab === 'storno' && (
+        <div className="grid-2">
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <div className="card-title">Apply Storno Correction</div>
+                <div className="card-subtitle">Reverse a posted bill, invoice, or inventory movement</div>
+              </div>
+            </div>
+            <div className="card-body form-section">
+              <div className="alert alert-info">
+                Storno reverses the accounting effect by creating an equal and opposite journal entry.
+                This satisfies Kosovo Law 06/L-032 correction requirements.
+              </div>
+
+              <div className="field-group">
+                <label className="field-label">Entity Type</label>
+                <select className="select" value={stornoType} onChange={e => setStornoType(e.target.value as any)}>
+                  <option value="bill">Supplier Bill</option>
+                  <option value="invoice">Customer Invoice</option>
+                  <option value="inventory">Inventory Movement</option>
+                </select>
+              </div>
+              <div className="field-group">
+                <label className="field-label">Entity ID</label>
+                <input className="input" placeholder="Paste the UUID of the entity to reverse" value={stornoEntityId} onChange={e => setStornoEntityId(e.target.value)} />
+              </div>
+              <div className="field-group">
+                <label className="field-label">Reason for Correction</label>
+                <input className="input" value={stornoReason} onChange={e => setStornoReason(e.target.value)} placeholder="e.g. Incorrect amount entered" />
+              </div>
+
+              <div>
+                <button className="btn btn-danger" onClick={runStorno} disabled={loading || !stornoEntityId}>
+                  {loading ? 'Applying…' : 'Apply Storno'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <div className="card-title">Storno Workflow</div>
+                <div className="card-subtitle">How corrections propagate through the system</div>
+              </div>
+            </div>
+            <div className="card-body">
+              <div className="workflow-steps">
+                {[
+                  { n: 1, title: 'User initiates storno',     sub: 'POST /api/v1/operations/storno with entityId + reason' },
+                  { n: 2, title: 'Operations Service',        sub: 'Marks entity REVERTED, publishes billReverted domain event' },
+                  { n: 3, title: 'Ledger Service',            sub: 'Consumes event, creates STORNO journal entry with swapped debits/credits' },
+                  { n: 4, title: 'AI Service',                sub: 'Ingests journalEntryPosted event, updates financial snapshot' },
+                  { n: 5, title: 'Correction complete',       sub: 'Books remain balanced — Kosovo Law 06/L-032 §44 compliant' },
+                ].map(s => (
+                  <div key={s.n} className="workflow-step">
+                    <div className="step-dot">{s.n}</div>
+                    <div className="step-content">
+                      <div className="step-title">{s.title}</div>
+                      <div className="step-sub">{s.sub}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Activity tab ────────────────────────── */}
+      {tab === 'activity' && (
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <div className="card-title">Activity Log</div>
+              <div className="card-subtitle">Timeline of all operations — last 15 events</div>
+            </div>
+            <button className="btn btn-secondary btn-sm" onClick={loadActivities}>↻ Refresh</button>
+          </div>
+          {activities.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">🕐</div>
+              <div className="empty-state-text">No activity yet</div>
+              <div className="empty-state-sub">Create a bill or invoice to see activity here</div>
+            </div>
+          ) : (
+            <table className="erp-table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Event Type</th>
+                  <th>Summary</th>
+                  <th>Entity ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activities.map(a => (
+                  <tr key={a.id}>
+                    <td className="muted">{new Date(a.at).toLocaleString()}</td>
+                    <td><span className="badge badge-blue" style={{ fontSize: 10 }}>{a.type}</span></td>
+                    <td>{a.summary}</td>
+                    <td className="text-mono muted">{a.entityId ? `${a.entityId.substring(0, 10)}…` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 
 interface BillLineForm {
   description: string;
@@ -89,753 +695,5 @@ const emptyLine: BillLineForm = {
   quantity: 1,
   unitPrice: 0,
   taxCategoryId: '43'
-};
-
-const emptyInvoiceLine: InvoiceLineForm = {
-  description: '',
-  quantity: 1,
-  unitPrice: 0
-};
-
-export const DailyOpsPage: React.FC = () => {
-  const [supplierId, setSupplierId] = useState('SUP-1');
-  const [issueDate, setIssueDate] = useState<string>(
-    new Date().toISOString().slice(0, 10)
-  );
-  const [currency, setCurrency] = useState('EUR');
-  const [lines, setLines] = useState<BillLineForm[]>([emptyLine]);
-  const [loading, setLoading] = useState(false);
-  const [activeBill, setActiveBill] = useState<BillResponse | null>(null);
-  const [lookupId, setLookupId] = useState('');
-  const [customerId, setCustomerId] = useState('CUS-1');
-  const [invoiceLines, setInvoiceLines] = useState<InvoiceLineForm[]>([
-    emptyInvoiceLine
-  ]);
-  const [activeInvoice, setActiveInvoice] = useState<InvoiceResponse | null>(null);
-  const [invoiceLookupId, setInvoiceLookupId] = useState('');
-  const [sku, setSku] = useState('SKU-1');
-  const [itemDescription, setItemDescription] = useState('Office item');
-  const [movementType, setMovementType] = useState<'RECEIPT' | 'ISSUE'>('RECEIPT');
-  const [movementQty, setMovementQty] = useState(1);
-  const [movementUnitCost, setMovementUnitCost] = useState(10);
-  const [valuation, setValuation] = useState<InventoryValuation | null>(null);
-  const [activities, setActivities] = useState<ActivityEntry[]>([]);
-  const [stornoType, setStornoType] = useState<'bill' | 'invoice' | 'inventory'>('bill');
-  const [stornoEntityId, setStornoEntityId] = useState('');
-  const [stornoReason, setStornoReason] = useState('Correction of erroneous entry');
-  const [error, setError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
-
-  const api = axios.create({
-    baseURL: '/api/v1'
-  });
-
-  const getErrorMessage = (e: any, fallback: string): string => {
-    const message = e?.response?.data?.message;
-    if (Array.isArray(message)) return message.join(', ');
-    if (typeof message === 'string') return message;
-    if (typeof e?.message === 'string') return e.message;
-    return fallback;
-  };
-
-  const handleLineChange = (
-    index: number,
-    field: keyof BillLineForm,
-    value: string
-  ) => {
-    setLines((prev) =>
-      prev.map((l, i) =>
-        i === index
-          ? {
-              ...l,
-              [field]:
-                field === 'quantity' || field === 'unitPrice'
-                  ? Number(value)
-                  : value
-            }
-          : l
-      )
-    );
-  };
-
-  const addLine = () => setLines((prev) => [...prev, emptyLine]);
-
-  const handleInvoiceLineChange = (
-    index: number,
-    field: keyof InvoiceLineForm,
-    value: string
-  ) => {
-    setInvoiceLines((prev) =>
-      prev.map((l, i) =>
-        i === index
-          ? {
-              ...l,
-              [field]: field === 'quantity' || field === 'unitPrice' ? Number(value) : value
-            }
-          : l
-      )
-    );
-  };
-
-  const addInvoiceLine = () => setInvoiceLines((prev) => [...prev, emptyInvoiceLine]);
-
-  const loadActivities = async () => {
-    const res = await api.get<ActivityEntry[]>('/operations/activities?limit=12');
-    setActivities(res.data);
-  };
-
-  const loadValuation = async () => {
-    const res = await api.get<InventoryValuation>('/inventory/valuation');
-    setValuation(res.data);
-  };
-
-  const createBill = async () => {
-    setError(null);
-    setSuccessMessage(null);
-    setLoading(true);
-    try {
-      const payload = {
-        supplierId,
-        issueDate,
-        currency,
-        lineItems: lines
-      };
-      const res = await api.post<BillResponse>('/bills', payload);
-      setActiveBill(res.data);
-      setLookupId(res.data.id);
-      setStornoEntityId(res.data.id);
-      await loadActivities();
-    } catch (e: any) {
-      setError(getErrorMessage(e, 'Failed to create bill'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const postBill = async () => {
-    if (!activeBill) return;
-    setError(null);
-    setSuccessMessage(null);
-    setLoading(true);
-    try {
-      const res = await api.post<BillResponse>(`/bills/${activeBill.id}/post`);
-      setActiveBill(res.data);
-      await loadActivities();
-    } catch (e: any) {
-      setError(getErrorMessage(e, 'Failed to post bill'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchBill = async () => {
-    if (!lookupId) return;
-    setError(null);
-    setLoading(true);
-    try {
-      const res = await api.get<BillResponse>(`/bills/${lookupId}`);
-      setActiveBill(res.data);
-      setStornoEntityId(res.data.id);
-    } catch (e: any) {
-      setError(getErrorMessage(e, 'Failed to fetch bill'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const createInvoice = async () => {
-    setError(null);
-    setLoading(true);
-    try {
-      const res = await api.post<InvoiceResponse>('/invoices', {
-        customerId,
-        issueDate,
-        currency,
-        lines: invoiceLines
-      });
-      setActiveInvoice(res.data);
-      setInvoiceLookupId(res.data.id);
-      setStornoEntityId(res.data.id);
-      await loadActivities();
-    } catch (e: any) {
-      setError(getErrorMessage(e, 'Failed to create invoice'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const sendInvoice = async () => {
-    if (!activeInvoice) return;
-    setError(null);
-    setLoading(true);
-    try {
-      const res = await api.post<InvoiceResponse>(`/invoices/${activeInvoice.id}/send`);
-      setActiveInvoice(res.data);
-      await loadActivities();
-    } catch (e: any) {
-      setError(getErrorMessage(e, 'Failed to send invoice'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const payInvoice = async () => {
-    if (!activeInvoice) return;
-    setError(null);
-    setLoading(true);
-    try {
-      const res = await api.post<InvoiceResponse>(`/invoices/${activeInvoice.id}/pay`);
-      setActiveInvoice(res.data);
-      await loadActivities();
-    } catch (e: any) {
-      setError(getErrorMessage(e, 'Failed to mark invoice as paid'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchInvoice = async () => {
-    if (!invoiceLookupId) return;
-    setError(null);
-    setLoading(true);
-    try {
-      const res = await api.get<InvoiceResponse>(`/invoices/${invoiceLookupId}`);
-      setActiveInvoice(res.data);
-      setStornoEntityId(res.data.id);
-    } catch (e: any) {
-      setError(getErrorMessage(e, 'Failed to fetch invoice'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const recordMovement = async () => {
-    setError(null);
-    setLoading(true);
-    try {
-      const movement = await api.post('/inventory/movements', {
-        sku,
-        description: itemDescription,
-        type: movementType,
-        quantity: movementQty,
-        unitCost: movementUnitCost
-      });
-      setStornoEntityId(movement.data.id);
-      setStornoType('inventory');
-      await loadValuation();
-      await loadActivities();
-    } catch (e: any) {
-      setError(getErrorMessage(e, 'Failed to record inventory movement'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const runStorno = async (e?: React.MouseEvent) => {
-    e?.preventDefault();
-    e?.stopPropagation();
-    
-    if (!stornoEntityId) {
-      setError('Please enter an Entity ID');
-      return;
-    }
-    
-    setError(null);
-    setSuccessMessage(null);
-    setLoading(true);
-    
-    try {
-      console.log('Starting storno for:', { stornoType, stornoEntityId, stornoReason });
-      
-      const res = await api.post('/operations/storno', {
-        entityType: stornoType,
-        entityId: stornoEntityId,
-        reason: stornoReason
-      });
-
-      console.log('Storno response received:', res.data);
-
-      // Safely update state based on entity type
-      if (stornoType === 'bill' && res.data) {
-        console.log('Setting activeBill to:', res.data);
-        setActiveBill(res.data);
-      }
-      if (stornoType === 'invoice' && res.data) {
-        console.log('Setting activeInvoice to:', res.data);
-        setActiveInvoice(res.data);
-      }
-      
-      // Reload data
-      console.log('Reloading valuation and activities...');
-      await Promise.all([
-        loadValuation().catch((err) => { console.error('loadValuation error:', err); }),
-        loadActivities().catch((err) => { console.error('loadActivities error:', err); })
-      ]);
-      
-      console.log('Storno completed successfully');
-      setSuccessMessage(`✓ Storno applied successfully for ${stornoType} ${stornoEntityId}`);
-    } catch (e: any) {
-      console.error('Storno error:', e);
-      console.error('Error response:', e?.response?.data);
-      setError(getErrorMessage(e, 'Failed storno operation'));
-    } finally {
-      setLoading(false);
-      console.log('Storno operation finished');
-    }
-  };
-
-  React.useEffect(() => {
-    loadActivities().catch(() => undefined);
-    loadValuation().catch(() => undefined);
-  }, []);
-
-  return (
-    <div className="content-grid">
-      <section className="card">
-        <header className="card-header">
-          <div>
-            <div className="card-title">Capture Supplier Bill (Fatura Hyrëse)</div>
-            <div className="card-subtitle">
-              Draft a bill in Daily Operations before it flows to the Ledger.
-            </div>
-          </div>
-          <div className="pill-row">
-            <span className="tag-muted">Context: OperationsService</span>
-            <span className="tag">POST /api/bills</span>
-          </div>
-        </header>
-
-        <div className="stack">
-          <div className="field-row">
-            <div style={{ flex: 1 }}>
-              <div className="field-label">Supplier ID</div>
-              <input
-                className="input"
-                value={supplierId}
-                onChange={(e) => setSupplierId(e.target.value)}
-              />
-            </div>
-            <div>
-              <div className="field-label">Issue date</div>
-              <input
-                type="date"
-                className="input"
-                value={issueDate}
-                onChange={(e) => setIssueDate(e.target.value)}
-              />
-            </div>
-            <div style={{ width: 120 }}>
-              <div className="field-label">Currency</div>
-              <select
-                className="select"
-                value={currency}
-                onChange={(e) => setCurrency(e.target.value)}
-              >
-                <option value="EUR">EUR</option>
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <div className="field-label">Line items</div>
-            <div className="muted" style={{ marginBottom: 8 }}>
-              Description = what was bought, Quantity = units, Unit Price = price per unit,
-              Tax Category = VAT treatment for that line.
-            </div>
-            <div className="stack">
-              <div className="field-row">
-                <div style={{ flex: 1 }}>
-                  <div className="field-label">Description</div>
-                </div>
-                <div style={{ width: 120 }}>
-                  <div className="field-label">Quantity</div>
-                </div>
-                <div style={{ width: 120 }}>
-                  <div className="field-label">Unit Price</div>
-                </div>
-                <div style={{ width: 180 }}>
-                  <div className="field-label">Tax Category</div>
-                </div>
-              </div>
-              {lines.map((line, idx) => (
-                <div key={idx} className="field-row">
-                  <input
-                    className="input"
-                    placeholder="Description"
-                    value={line.description}
-                    onChange={(e) =>
-                      handleLineChange(idx, 'description', e.target.value)
-                    }
-                    style={{ flex: 1 }}
-                  />
-                  <input
-                    type="number"
-                    className="input"
-                    placeholder="Qty"
-                    value={line.quantity}
-                    onChange={(e) =>
-                      handleLineChange(idx, 'quantity', e.target.value)
-                    }
-                    style={{ width: 120 }}
-                  />
-                  <input
-                    type="number"
-                    className="input"
-                    placeholder="Unit price"
-                    value={line.unitPrice}
-                    onChange={(e) =>
-                      handleLineChange(idx, 'unitPrice', e.target.value)
-                    }
-                    style={{ width: 120 }}
-                  />
-                  <select
-                    className="select"
-                    value={line.taxCategoryId}
-                    onChange={(e) =>
-                      handleLineChange(idx, 'taxCategoryId', e.target.value)
-                    }
-                    style={{ width: 180 }}
-                  >
-                    <option value="43">43 · Standard VAT</option>
-                    <option value="31">31 · Exempt</option>
-                    <option value="28">28 · Reverse charge</option>
-                  </select>
-                </div>
-              ))}
-              <button
-                type="button"
-                className="button-secondary"
-                onClick={addLine}
-              >
-                + Add line
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <button
-              type="button"
-              className="button"
-              disabled={loading}
-              onClick={createBill}
-            >
-              {loading ? 'Working…' : 'Create Draft Bill'}
-            </button>
-          </div>
-
-          {error && <div className="muted" style={{ color: '#fecaca' }}>{error}</div>}
-          {successMessage && <div className="muted" style={{ color: '#86efac' }}>{successMessage}</div>}
-        </div>
-      </section>
-
-      <section className="card">
-        <header className="card-header">
-          <div>
-            <div className="card-title">Bill lifecycle &amp; Compliance view</div>
-            <div className="card-subtitle">
-              Post the bill and see TaxCategory validation via cached rules.
-            </div>
-          </div>
-        </header>
-
-        <div className="stack">
-          <div className="field-row">
-            <div style={{ flex: 1 }}>
-              <div className="field-label">Bill ID</div>
-              <input
-                className="input"
-                placeholder="Paste bill UUID"
-                value={lookupId}
-                onChange={(e) => setLookupId(e.target.value)}
-              />
-            </div>
-            <button
-              type="button"
-              className="button-secondary"
-              disabled={loading || !lookupId}
-              onClick={fetchBill}
-            >
-              Load
-            </button>
-            <button
-              type="button"
-              className="button"
-              disabled={loading || !activeBill}
-              onClick={postBill}
-            >
-              Post bill
-            </button>
-          </div>
-
-          {activeBill ? (
-            <>
-              <div className="pill-row">
-                <span
-                  className={
-                    activeBill.status === 'POSTED'
-                      ? 'tag-success'
-                      : activeBill.status === 'DRAFT'
-                      ? 'tag-warning'
-                      : 'tag-muted'
-                  }
-                >
-                  Status: {activeBill.status}
-                </span>
-                <span className="tag-muted">
-                  Total net: {(activeBill.totalNetAmount ?? 0).toFixed(2)}{' '}
-                  {activeBill.currency}
-                </span>
-              </div>
-              <div className="json-preview">
-                <pre>{JSON.stringify(activeBill, null, 2)}</pre>
-              </div>
-              {activeBill.workflow && (
-                <div className="json-preview" style={{ maxHeight: 'none' }}>
-                  <div><strong>Storno workflow (domain event driven)</strong></div>
-                  <div className="muted">
-                    Event emitted: {activeBill.workflow.event?.type} with payload
-                    {' '}
-                    {activeBill.workflow.event?.payload?.OriginalReference}
-                  </div>
-                  <div className="muted">
-                    Ledger storno entries: {activeBill.workflow.ledger?.journalEntries?.length ?? 0}
-                  </div>
-                  <div className="muted">
-                    AI financial snapshot total expenses:{' '}
-                    {activeBill.workflow.aiSnapshot?.totalExpenses?.toFixed(2) ?? '0.00'}
-                  </div>
-                </div>
-              )}
-              <div className="muted">
-                Tax codes are validated against cached Compliance rules:
-                43/31/28. No round-trip to Compliance at posting time.
-              </div>
-            </>
-          ) : (
-            <div className="muted">
-              Create or load a bill to inspect its lifecycle. Once integrated,
-              posting will emit a domain event to the Ledger service.
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section className="card">
-        <header className="card-header">
-          <div>
-            <div className="card-title">Invoicing (Accounts Receivable)</div>
-            <div className="card-subtitle">
-              Manage Fatura Dalëse lifecycle: Draft → Sent → Paid.
-            </div>
-          </div>
-          <div className="pill-row">
-            <span className="tag">POST /api/v1/invoices</span>
-          </div>
-        </header>
-
-        <div className="stack">
-          <div className="field-row">
-            <div style={{ flex: 1 }}>
-              <div className="field-label">Customer ID</div>
-              <input
-                className="input"
-                value={customerId}
-                onChange={(e) => setCustomerId(e.target.value)}
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div className="field-label">Invoice ID</div>
-              <input
-                className="input"
-                value={invoiceLookupId}
-                onChange={(e) => setInvoiceLookupId(e.target.value)}
-              />
-            </div>
-            <button type="button" className="button-secondary" onClick={fetchInvoice}>
-              Load
-            </button>
-          </div>
-
-          {invoiceLines.map((line, idx) => (
-            <div key={idx} className="field-row">
-              <input
-                className="input"
-                style={{ flex: 1 }}
-                placeholder="Description"
-                value={line.description}
-                onChange={(e) => handleInvoiceLineChange(idx, 'description', e.target.value)}
-              />
-              <input
-                className="input"
-                style={{ width: 120 }}
-                type="number"
-                placeholder="Qty"
-                value={line.quantity}
-                onChange={(e) => handleInvoiceLineChange(idx, 'quantity', e.target.value)}
-              />
-              <input
-                className="input"
-                style={{ width: 120 }}
-                type="number"
-                placeholder="Unit price"
-                value={line.unitPrice}
-                onChange={(e) => handleInvoiceLineChange(idx, 'unitPrice', e.target.value)}
-              />
-            </div>
-          ))}
-
-          <div className="field-row">
-            <button type="button" className="button-secondary" onClick={addInvoiceLine}>
-              + Add invoice line
-            </button>
-            <button type="button" className="button" onClick={createInvoice} disabled={loading}>
-              Create Draft Invoice
-            </button>
-            <button type="button" className="button-secondary" onClick={sendInvoice} disabled={loading || !activeInvoice}>
-              Send
-            </button>
-            <button type="button" className="button-secondary" onClick={payInvoice} disabled={loading || !activeInvoice}>
-              Mark Paid
-            </button>
-          </div>
-
-          {activeInvoice && (
-            <div className="json-preview">
-              <pre>{JSON.stringify(activeInvoice, null, 2)}</pre>
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section className="card">
-        <header className="card-header">
-          <div>
-            <div className="card-title">Inventory Monitoring</div>
-            <div className="card-subtitle">
-              Track receipts/issues and calculate simple inventory valuation.
-            </div>
-          </div>
-          <div className="pill-row">
-            <span className="tag">GET /api/v1/inventory/valuation</span>
-          </div>
-        </header>
-
-        <div className="stack">
-          <div className="field-row">
-            <input className="input" value={sku} onChange={(e) => setSku(e.target.value)} placeholder="SKU" />
-            <input
-              className="input"
-              value={itemDescription}
-              onChange={(e) => setItemDescription(e.target.value)}
-              placeholder="Item description"
-            />
-          </div>
-          <div className="field-row">
-            <select
-              className="select"
-              value={movementType}
-              onChange={(e) => setMovementType(e.target.value as 'RECEIPT' | 'ISSUE')}
-            >
-              <option value="RECEIPT">RECEIPT</option>
-              <option value="ISSUE">ISSUE</option>
-            </select>
-            <input
-              className="input"
-              type="number"
-              value={movementQty}
-              onChange={(e) => setMovementQty(Number(e.target.value))}
-              placeholder="Quantity"
-            />
-            <input
-              className="input"
-              type="number"
-              value={movementUnitCost}
-              onChange={(e) => setMovementUnitCost(Number(e.target.value))}
-              placeholder="Unit cost"
-            />
-            <button className="button" type="button" onClick={recordMovement} disabled={loading}>
-              Record movement
-            </button>
-          </div>
-
-          <div className="muted">
-            Total valuation: {valuation ? valuation.totalValue.toFixed(2) : '0.00'} {currency}
-          </div>
-          <div className="json-preview">
-            <pre>{JSON.stringify(valuation, null, 2)}</pre>
-          </div>
-        </div>
-      </section>
-
-      <section className="card">
-        <header className="card-header">
-          <div>
-            <div className="card-title">Correction Logic (Storno)</div>
-            <div className="card-subtitle">
-              Reverse erroneous bill, invoice, or inventory movements.
-            </div>
-          </div>
-        </header>
-
-        <div className="stack">
-          <div className="field-row">
-            <select
-              className="select"
-              value={stornoType}
-              onChange={(e) => setStornoType(e.target.value as 'bill' | 'invoice' | 'inventory')}
-            >
-              <option value="bill">Bill</option>
-              <option value="invoice">Invoice</option>
-              <option value="inventory">Inventory movement</option>
-            </select>
-            <input
-              className="input"
-              value={stornoEntityId}
-              onChange={(e) => setStornoEntityId(e.target.value)}
-              placeholder="Entity ID"
-            />
-          </div>
-          <input
-            className="input"
-            value={stornoReason}
-            onChange={(e) => setStornoReason(e.target.value)}
-            placeholder="Reason for storno"
-          />
-          <button className="button" type="button" onClick={(e) => runStorno(e)} disabled={loading || !stornoEntityId}>
-            Apply storno
-          </button>
-        </div>
-      </section>
-
-      <section className="card">
-        <header className="card-header">
-          <div>
-            <div className="card-title">Daily Activity Documentation</div>
-            <div className="card-subtitle">
-              Timeline of intent captured in OperationsService.
-            </div>
-          </div>
-          <button className="button-secondary" type="button" onClick={loadActivities}>
-            Refresh
-          </button>
-        </header>
-
-        <div className="stack">
-          {activities.length === 0 ? (
-            <div className="muted">No activity yet.</div>
-          ) : (
-            activities.map((entry) => (
-              <div key={entry.id} className="json-preview" style={{ maxHeight: 'none' }}>
-                <div className="muted">{new Date(entry.at).toLocaleString()}</div>
-                <div>{entry.type}</div>
-                <div className="muted">{entry.summary}</div>
-                {entry.entityId && <div className="muted">ID: {entry.entityId}</div>}
-              </div>
-            ))
-          )}
-        </div>
-      </section>
-    </div>
-  );
 };
 

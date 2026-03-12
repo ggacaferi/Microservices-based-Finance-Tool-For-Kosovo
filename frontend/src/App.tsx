@@ -1,6 +1,7 @@
 import React from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from './components/Layout';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { DailyOpsPage } from './pages/DailyOpsPage';
 import { CompliancePage } from './pages/CompliancePage';
 import { LedgerPage } from './pages/LedgerPage';

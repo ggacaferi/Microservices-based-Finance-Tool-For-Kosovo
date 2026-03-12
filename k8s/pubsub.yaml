@@ -1,0 +1,54 @@
+# ──────────────────────────────────────────────────────────
+# Google Cloud Pub/Sub — Topic & Subscription Setup
+#
+# These are GCP-managed resources. This file documents
+# the required Pub/Sub topology. Provision via:
+#   - Terraform (google_pubsub_topic / google_pubsub_subscription)
+#   - gcloud CLI
+#   - Or let the application auto-create them on startup
+#
+# The DomainEventBus creates these automatically if they
+# don't exist (see domain-event.bus.ts).
+# ──────────────────────────────────────────────────────────
+
+# Topics (publishers)
+# ─────────────────────────────────────────────────────────
+# Topic: guri-finance.operations.bill-posted
+#   Publisher:  Operations Service
+#   Payload:    { type, billId, supplierId, totalNetAmount, date, originalReference }
+#
+# Topic: guri-finance.operations.bill-reverted
+#   Publisher:  Operations Service
+#   Payload:    { type, originalReference, billId, date, reason }
+#
+# Topic: guri-finance.ledger.journal-entry-posted
+#   Publisher:  Ledger Service
+#   Payload:    { type, journalEntryId, reference, date, deltaExpenses }
+
+# Subscriptions (consumers)
+# ─────────────────────────────────────────────────────────
+# Subscription: guri-finance.ledger.bill-posted-sub
+#   Topic:      guri-finance.operations.bill-posted
+#   Consumer:   Ledger Service
+#   Action:     Create ORIGINAL journal entry
+#
+# Subscription: guri-finance.ledger.bill-reverted-sub
+#   Topic:      guri-finance.operations.bill-reverted
+#   Consumer:   Ledger Service
+#   Action:     Create STORNO journal entry
+#
+# Subscription: guri-finance.ai.journal-entry-posted-sub
+#   Topic:      guri-finance.ledger.journal-entry-posted
+#   Consumer:   AI Service
+#   Action:     Update financial snapshot + ingest to pgvector
+
+---
+# Workload Identity — allows GKE pods to authenticate to Pub/Sub
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: guri-pubsub-sa
+  namespace: guri-finance
+  annotations:
+    # Bind to a GCP service account with roles/pubsub.editor
+    iam.gke.io/gcp-service-account: guri-pubsub@guri-finance-prod.iam.gserviceaccount.com

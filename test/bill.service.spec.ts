@@ -3,6 +3,7 @@ import { BillService } from '../src/application/bills/bill.service';
 import { ActivityLogService } from '../src/application/operations/activity-log.service';
 import { DomainEventBus } from '../src/application/events/domain-event.bus';
 import { TaxRuleService } from '../src/domain/tax/tax-rule.service';
+import { ComplianceService } from '../src/compliance/application/compliance.service';
 import { BillStatus } from '../src/domain/bills/fatura-hyrese.aggregate';
 import { BillRepository } from '../src/infrastructure/persistence/bills/bill.repository';
 
@@ -10,8 +11,14 @@ describe('BillService', () => {
   let service: BillService;
 
   beforeEach(() => {
-    const taxRuleService = new TaxRuleService();
+    // Bootstrap ComplianceService (loads Kosovo rules into cache)
+    const complianceService = new ComplianceService();
+    complianceService.onModuleInit();
+
+    // TaxRuleService registers as a subscriber and receives the initial bundle
+    const taxRuleService = new TaxRuleService(complianceService);
     taxRuleService.onModuleInit();
+
     service = new BillService(
       taxRuleService,
       new BillRepository(),
