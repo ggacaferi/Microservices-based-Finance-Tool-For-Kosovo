@@ -1,16 +1,40 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 const roleColor: Record<string, string> = {
   admin: 'badge-blue',
   accountant: 'badge-green',
+  data_clerk: 'badge-blue',
   auditor: 'badge-amber',
-  viewer: 'badge-slate',
+};
+
+const roleHome = (role?: string): string => {
+  switch (role) {
+    case 'admin':
+    case 'accountant':
+    case 'data_clerk':
+      return '/daily-ops';
+    case 'auditor':
+      return '/ledger';
+    default:
+      return '/auth';
+  }
 };
 
 export const IamPage: React.FC = () => {
-  const [token, setToken] = useState('');
-  const [currentUser, setCurrentUser] = useState<any>(null);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const isAuthPage = location.pathname === '/auth';
+  const [token, setToken] = useState(localStorage.getItem('guri_token') ?? '');
+  const [currentUser, setCurrentUser] = useState<any>(() => {
+    try {
+      const raw = localStorage.getItem('guri_user');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
   const [users, setUsers] = useState<any[]>([]);
   const [auditLog, setAuditLog] = useState<any[]>([]);
   const [tab, setTab] = useState<'register' | 'login'>('register');
@@ -24,7 +48,8 @@ export const IamPage: React.FC = () => {
   const [newEmail, setNewEmail] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newName, setNewName] = useState('');
-  const [newRole, setNewRole] = useState('accountant');
+  const [newRole, setNewRole] = useState('data_clerk');
+  const [createdAdmin, setCreatedAdmin] = useState<{ email: string; password: string; role: string } | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
@@ -41,7 +66,11 @@ export const IamPage: React.FC = () => {
       });
       setToken(res.data.accessToken);
       setCurrentUser(res.data.user);
-      flash('success', `Tenant registered. Welcome, ${res.data.user.fullName}!`);
+      localStorage.setItem('guri_token', res.data.accessToken);
+      localStorage.setItem('guri_user', JSON.stringify(res.data.user));
+      setCreatedAdmin({ email: regEmail, password: regPassword, role: 'admin' });
+      flash('success', `Tenant registered. Admin account created: email=${regEmail}, password=${regPassword}, role=admin`);
+      navigate(roleHome(res.data.user?.role));
     } catch (e: any) { flash('error', e.response?.data?.message || e.message); }
   };
 
@@ -50,7 +79,10 @@ export const IamPage: React.FC = () => {
       const res = await axios.post('/api/v1/iam/login', { email: loginEmail, password: loginPassword });
       setToken(res.data.accessToken);
       setCurrentUser(res.data.user);
+      localStorage.setItem('guri_token', res.data.accessToken);
+      localStorage.setItem('guri_user', JSON.stringify(res.data.user));
       flash('success', `Logged in as ${res.data.user.fullName} (${res.data.user.role})`);
+      navigate(roleHome(res.data.user?.role));
     } catch (e: any) { flash('error', e.response?.data?.message || e.message); }
   };
 
@@ -85,6 +117,77 @@ export const IamPage: React.FC = () => {
     if (token) { loadUsers(); loadAudit(); }
   }, [token]);
 
+  useEffect(() => {
+    if (location.pathname === '/auth' && token && currentUser) {
+      navigate(roleHome(currentUser?.role));
+    }
+  }, [location.pathname, token, currentUser, navigate]);
+
+  if (isAuthPage) {
+    return (
+      <div className="auth-shell">
+        <div className="auth-card">
+          <div className="auth-title">Welcome back</div>
+          <div className="auth-subtitle">Sign in to continue, or create a new account.</div>
+
+          {message && (
+            <div className={`alert alert-${message.type === 'success' ? 'success' : 'error'}`}>
+              {message.text}
+            </div>
+          )}
+
+          <div className="auth-tabs">
+            <button className={`auth-tab ${tab === 'login' ? 'active' : ''}`} onClick={() => setTab('login')}>Login</button>
+            <button className={`auth-tab ${tab === 'register' ? 'active' : ''}`} onClick={() => setTab('register')}>Sign up</button>
+          </div>
+
+          {tab === 'login' ? (
+            <div className="auth-form">
+              <div className="field-group">
+                <label className="field-label">Email</label>
+                <input className="input" type="email" placeholder="you@company.com" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} />
+              </div>
+              <div className="field-group">
+                <label className="field-label">Password</label>
+                <input className="input" type="password" placeholder="Enter password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleLogin()} />
+              </div>
+              <button className="btn btn-primary auth-btn" onClick={handleLogin}>Login</button>
+            </div>
+          ) : (
+            <div className="auth-form">
+              <div className="field-group">
+                <label className="field-label">Organisation</label>
+                <input className="input" placeholder="Your Company" value={regTenant} onChange={e => setRegTenant(e.target.value)} />
+              </div>
+              <div className="field-group">
+                <label className="field-label">Full name</label>
+                <input className="input" placeholder="Jane Doe" value={regName} onChange={e => setRegName(e.target.value)} />
+              </div>
+              <div className="field-group">
+                <label className="field-label">Email</label>
+                <input className="input" type="email" placeholder="admin@company.com" value={regEmail} onChange={e => setRegEmail(e.target.value)} />
+              </div>
+              <div className="field-group">
+                <label className="field-label">Password</label>
+                <input className="input" type="password" placeholder="At least 6 characters" value={regPassword} onChange={e => setRegPassword(e.target.value)} />
+              </div>
+              <button className="btn btn-primary auth-btn" onClick={handleRegister}>Create account</button>
+
+              {createdAdmin && (
+                <div className="auth-created">
+                  <div><strong>Admin created</strong></div>
+                  <div>Email: {createdAdmin.email}</div>
+                  <div>Password: {createdAdmin.password}</div>
+                  <div>Role: {createdAdmin.role}</div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="stack-lg">
       {message && (
@@ -93,67 +196,7 @@ export const IamPage: React.FC = () => {
         </div>
       )}
 
-      {/* Auth card */}
-      <div className="card">
-        <div className="card-header">
-          <div>
-            <div className="card-title">Authentication</div>
-            <div className="card-subtitle">Register a new tenant or sign in to an existing account</div>
-          </div>
-        </div>
-        <div className="card-body">
-          <div className="tabs">
-            <button className={`tab ${tab === 'register' ? 'active' : ''}`} onClick={() => setTab('register')}>Register Tenant</button>
-            <button className={`tab ${tab === 'login'    ? 'active' : ''}`} onClick={() => setTab('login')}>Sign In</button>
-          </div>
-
-          {tab === 'register' && (
-            <div className="form-section">
-              <div className="grid-2">
-                <div className="field-group">
-                  <label className="field-label">Organisation Name</label>
-                  <input className="input" placeholder="e.g. Ardiani LLC" value={regTenant} onChange={e => setRegTenant(e.target.value)} />
-                </div>
-                <div className="field-group">
-                  <label className="field-label">Admin Full Name</label>
-                  <input className="input" placeholder="e.g. Ardit Krasniqi" value={regName} onChange={e => setRegName(e.target.value)} />
-                </div>
-                <div className="field-group">
-                  <label className="field-label">Email Address</label>
-                  <input className="input" type="email" placeholder="admin@company.com" value={regEmail} onChange={e => setRegEmail(e.target.value)} />
-                </div>
-                <div className="field-group">
-                  <label className="field-label">Password</label>
-                  <input className="input" type="password" placeholder="Minimum 6 characters" value={regPassword} onChange={e => setRegPassword(e.target.value)} />
-                </div>
-              </div>
-              <div>
-                <button className="btn btn-primary" onClick={handleRegister}>Create Account & Tenant</button>
-              </div>
-            </div>
-          )}
-
-          {tab === 'login' && (
-            <div className="form-section">
-              <div className="grid-2">
-                <div className="field-group">
-                  <label className="field-label">Email Address</label>
-                  <input className="input" type="email" placeholder="your@email.com" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} />
-                </div>
-                <div className="field-group">
-                  <label className="field-label">Password</label>
-                  <input className="input" type="password" placeholder="Enter password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleLogin()} />
-                </div>
-              </div>
-              <div>
-                <button className="btn btn-primary" onClick={handleLogin}>Sign In</button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Active session */}
+      {/* Active session (only in platform IAM page) */}
       {currentUser && (
         <div className="grid-2">
           <div className="card">
@@ -211,8 +254,8 @@ export const IamPage: React.FC = () => {
                       <select className="select" value={newRole} onChange={e => setNewRole(e.target.value)}>
                         <option value="admin">Admin</option>
                         <option value="accountant">Accountant</option>
+                        <option value="data_clerk">Data Clerk</option>
                         <option value="auditor">Auditor</option>
-                        <option value="viewer">Viewer</option>
                       </select>
                     </div>
                     <div className="field-group">
@@ -233,7 +276,7 @@ export const IamPage: React.FC = () => {
       )}
 
       {/* Users table */}
-      {users.length > 0 && (
+      {location.pathname === '/platform/iam' && users.length > 0 && (
         <div className="card">
           <div className="card-header">
             <div>
@@ -266,7 +309,7 @@ export const IamPage: React.FC = () => {
       )}
 
       {/* Audit log */}
-      {auditLog.length > 0 && (
+      {location.pathname === '/platform/iam' && auditLog.length > 0 && (
         <div className="card">
           <div className="card-header">
             <div>

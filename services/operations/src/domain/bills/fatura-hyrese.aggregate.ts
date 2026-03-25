@@ -12,6 +12,7 @@ export interface BillLineProps {
   quantity: number;
   unitPrice: number;
   taxCategoryId: string;
+  accountCode: string;
 }
 
 export class BillLine {
@@ -19,15 +20,18 @@ export class BillLine {
   readonly quantity: number;
   readonly unitPrice: number;
   readonly taxCategoryId: string;
+  readonly accountCode: string;
 
   constructor(props: BillLineProps) {
     if (!props.description?.trim()) throw new Error('Bill line description is required.');
     if (props.quantity <= 0)        throw new Error('Bill line quantity must be greater than zero.');
     if (props.unitPrice < 0)        throw new Error('Bill line unit price cannot be negative.');
+    if (!props.accountCode?.trim()) throw new Error('Bill line account code is required.');
     this.description   = props.description;
     this.quantity      = props.quantity;
     this.unitPrice     = props.unitPrice;
     this.taxCategoryId = props.taxCategoryId;
+    this.accountCode   = props.accountCode;
   }
 
   get netAmount(): number { return this.quantity * this.unitPrice; }

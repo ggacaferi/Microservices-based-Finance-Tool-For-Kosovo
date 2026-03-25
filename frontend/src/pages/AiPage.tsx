@@ -2,6 +2,18 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
 const severityBadge: Record<string, string> = { critical: 'badge-red', warning: 'badge-amber', info: 'badge-blue' };
+const api = axios.create({ baseURL: '/api/v1' });
+
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('guri_token');
+  const rawUser = localStorage.getItem('guri_user');
+  let tenantId: string | undefined;
+  try { tenantId = rawUser ? JSON.parse(rawUser)?.tenantId : undefined; } catch {}
+  config.headers = config.headers || {};
+  if (token) (config.headers as any).Authorization = `Bearer ${token}`;
+  if (tenantId) (config.headers as any)['x-tenant-id'] = tenantId;
+  return config;
+});
 
 export const AiPage: React.FC = () => {
   const [snapshot, setSnapshot] = useState<any>(null);
@@ -11,13 +23,12 @@ export const AiPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [chatHistory, setChatHistory] = useState<Array<{ query: string; result: any }>>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
-
   const loadAll = async () => {
     try {
       const [s, i, e] = await Promise.all([
-        axios.get('/api/v1/ai/snapshot'),
-        axios.get('/api/v1/ai/insights'),
-        axios.get('/api/v1/ai/event-history'),
+        api.get('/ai/snapshot'),
+        api.get('/ai/insights'),
+        api.get('/ai/event-history'),
       ]);
       setSnapshot(s.data);
       setInsights(i.data);
@@ -31,7 +42,7 @@ export const AiPage: React.FC = () => {
     setQuery('');
     setLoading(true);
     try {
-      const res = await axios.post('/api/v1/ai/query', { query: q });
+      const res = await api.post('/ai/query', { query: q });
       setChatHistory(prev => [...prev, { query: q, result: res.data }]);
     } catch (e: any) {
       setChatHistory(prev => [...prev, { query: q, result: { answer: `Error: ${e.response?.data?.message || e.message}`, confidence: 0, sources: [] } }]);

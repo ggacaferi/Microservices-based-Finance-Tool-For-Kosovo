@@ -1,18 +1,19 @@
-# ── Shared ConfigMap for all services ────────────────────
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: guri-finance-config
+  name: guri-common-config
   namespace: guri-finance
 data:
   NODE_ENV: "production"
-  PUBSUB_ENABLED: "true"
-  GOOGLE_CLOUD_PROJECT: "guri-finance-prod"
-  JWT_SECRET: "change-me-in-production-use-k8s-secrets"
-  DB_LOGGING: "false"
+  KAFKA_BROKERS: "kafka:9092"
+  KAFKA_TOPIC_OPERATIONS_EVENTS: "operations.events"
+  KAFKA_TOPIC_LEDGER_EVENTS: "ledger.events"
+  COMPLIANCE_SERVICE_URL: "http://compliance:3002"
+  LEDGER_SERVICE_URL: "http://ledger:3004"
+  AI_SERVICE_URL: "http://ai:3005"
+  GEMINI_MODEL: "gemini-3-flash-preview"
 
 ---
-# ── IAM Database Credentials ────────────────────────────
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -25,7 +26,6 @@ data:
   IAM_DB_USER: "guri_iam"
 
 ---
-# ── Operations Database Credentials ─────────────────────
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -38,7 +38,6 @@ data:
   OPS_DB_USER: "guri_ops"
 
 ---
-# ── Ledger Database Credentials ─────────────────────────
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -51,7 +50,6 @@ data:
   LEDGER_DB_USER: "guri_ledger"
 
 ---
-# ── AI Database Credentials (pgvector) ──────────────────
 apiVersion: v1
 kind: ConfigMap
 metadata:

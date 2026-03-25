@@ -42,8 +42,9 @@ export class ComplianceClient implements OnModuleInit {
   /** Returns false when the Compliance Service is unreachable (graceful degradation) */
   async refreshBundle(): Promise<boolean> {
     try {
-      const axios = (await import('axios')).default;
-      const { data } = await axios.get(`${this.baseUrl}/api/v1/compliance/bundle`, { timeout: 5000 });
+      const response = await fetch(`${this.baseUrl}/api/v1/compliance/bundle`, { method: 'GET' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data: any = await response.json();
 
       if (data.version === this.bundleVersion) return true; // nothing changed
 
@@ -68,7 +69,11 @@ export class ComplianceClient implements OnModuleInit {
   isValidTaxId(id: string): boolean {
     if (this.taxRules.size === 0) {
       // Fallback: allow known Kosovo IDs so the service degrades gracefully
-      return ['43', '31', '28', '08'].includes(id);
+      return [
+        'VAT-00-NO', 'VAT-00-BI', 'VAT-00-BII', 'VAT-00-BJZ', 'VAT-00-BIJZ',
+        'VAT-IMP-18', 'VAT-IMP-08', 'VAT-IMPI-18', 'VAT-IMPI-08',
+        '43', '08', 'VAT-BIV-18', 'VAT-BIV-08', 'VAT-RC-CREDIT-18', '28',
+      ].includes(id);
     }
     return this.taxRules.has(id);
   }
@@ -78,7 +83,7 @@ export class ComplianceClient implements OnModuleInit {
     if (invalid.length > 0) {
       const allowed = this.taxRules.size > 0
         ? Array.from(this.taxRules.keys()).join(', ')
-        : '43, 31, 28, 08';
+        : 'VAT-00-NO, VAT-00-BI, VAT-00-BII, VAT-00-BJZ, VAT-00-BIJZ, VAT-IMP-18, VAT-IMP-08, VAT-IMPI-18, VAT-IMPI-08, 43, 08, VAT-BIV-18, VAT-BIV-08, VAT-RC-CREDIT-18, 28';
       throw new Error(`Invalid TaxCategoryId values: ${invalid.join(', ')}. Allowed: ${allowed}`);
     }
   }
@@ -90,4 +95,27 @@ export class ComplianceClient implements OnModuleInit {
 
   getBundleVersion(): number { return this.bundleVersion; }
   getTaxRules(): TaxRule[]   { return Array.from(this.taxRules.values()); }
+
+  async validateOrThrow(context: 'bill' | 'invoice' | 'inventory', payload: any): Promise<void> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/compliance/validate?context=${context}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`HTTP ${response.status}: ${body}`);
+      }
+      const data: any = await response.json();
+      if (!data?.valid) {
+        const violations = (data?.violations ?? []).map((v: any) => `${v.code}(${v.field}): ${v.message}`).join(' | ');
+        throw new Error(`Compliance validation failed: ${violations}`);
+      }
+    } catch (err: any) {
+      if (String(err?.message || '').includes('Compliance validation failed')) throw err;
+      // If compliance endpoint is unreachable, fail closed for strict enforcement
+      throw new Error(`Compliance Service unavailable for mandatory validation: ${err.message}`);
+    }
+  }
 }

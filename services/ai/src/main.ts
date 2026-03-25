@@ -7,6 +7,13 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.enableCors();
   app.setGlobalPrefix('api/v1');
+  const http = app.getHttpAdapter().getInstance();
+  http.get('/', (_req: any, res: any) =>
+    res.json({ service: 'ai', status: 'ok', apiBase: '/api/v1' }),
+  );
+  http.get('/health', (_req: any, res: any) =>
+    res.json({ service: 'ai', status: 'ok' }),
+  );
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   const port = process.env.PORT || 3005;
   await app.listen(port);

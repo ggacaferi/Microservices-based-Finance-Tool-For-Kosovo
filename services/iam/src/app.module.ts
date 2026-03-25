@@ -22,6 +22,7 @@ const host = process.env.IAM_DB_HOST || process.env.POSTGRES_HOST;
   imports: [
     ...(host ? [
       TypeOrmModule.forRoot({
+        name: 'iam',
         type: 'postgres',
         host,
         port: parseInt(process.env.IAM_DB_PORT || '5432', 10),
@@ -31,7 +32,7 @@ const host = process.env.IAM_DB_HOST || process.env.POSTGRES_HOST;
         entities: [UserOrmEntity, TenantOrmEntity],
         synchronize: process.env.NODE_ENV !== 'production',
       }),
-      TypeOrmModule.forFeature([UserOrmEntity, TenantOrmEntity]),
+      TypeOrmModule.forFeature([UserOrmEntity, TenantOrmEntity], 'iam'),
     ] : []),
   ],
   controllers: [IamController, HealthController],

@@ -108,6 +108,38 @@ services:
     environment:
       PUBSUB_PROJECT_ID: guri-finance-local
 
+  # ── Zookeeper (Kafka dependency) ──────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: guri-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  # ── Kafka Broker ──────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: guri-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   # ════════════════════════════════════════════════════════
   # MICROSERVICES
   # ════════════════════════════════════════════════════════
@@ -177,6 +209,8 @@ services:
       COMPLIANCE_SERVICE_URL: http://compliance:3002
       LEDGER_SERVICE_URL: http://ledger:3004
       AI_SERVICE_URL: http://ai:3005
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC_OPERATIONS_EVENTS: operations.events
     ports:
       - "3003:3003"
     depends_on:
@@ -184,8 +218,10 @@ services:
         condition: service_healthy
       compliance:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3003/api/v1/bills || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3003/api/v1/operations/activities || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -206,10 +242,15 @@ services:
       LEDGER_DB_PASSWORD: localdev
       LEDGER_DB_NAME: guri_ledger
       AI_SERVICE_URL: http://ai:3005
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC_OPERATIONS_EVENTS: operations.events
+      KAFKA_TOPIC_LEDGER_EVENTS: ledger.events
     ports:
       - "3004:3004"
     depends_on:
       ledger-postgres:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3004/api/v1/ledger/summary || exit 1"]
@@ -224,6 +265,8 @@ services:
       dockerfile: Dockerfile
     container_name: guri-ai
     restart: unless-stopped
+    env_file:
+      - ./services/ai/.env
     environment:
       PORT: "3005"
       NODE_ENV: development
@@ -232,10 +275,29 @@ services:
       AI_DB_USER: guri_ai
       AI_DB_PASSWORD: localdev
       AI_DB_NAME: guri_ai
+      IAM_DB_HOST: iam-postgres
+      IAM_DB_PORT: "5432"
+      IAM_DB_USER: guri_iam
+      IAM_DB_PASSWORD: localdev
+      IAM_DB_NAME: guri_iam
+      OPS_DB_HOST: ops-postgres
+      OPS_DB_PORT: "5432"
+      OPS_DB_USER: guri_ops
+      OPS_DB_PASSWORD: localdev
+      OPS_DB_NAME: guri_operations
+      LEDGER_DB_HOST: ledger-postgres
+      LEDGER_DB_PORT: "5432"
+      LEDGER_DB_USER: guri_ledger
+      LEDGER_DB_PASSWORD: localdev
+      LEDGER_DB_NAME: guri_ledger
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC_LEDGER_EVENTS: ledger.events
     ports:
       - "3005:3005"
     depends_on:
       ai-postgres:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3005/api/v1/ai/snapshot || exit 1"]
@@ -254,6 +316,11 @@ services:
       VITE_API_BASE_URL: http://localhost:3000/api/v1
     ports:
       - "80:80"
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /usr/share/nginx/html/index.html || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # ── API Gateway (nginx :3000) ─────────────────────────
   # Must start last — depends on all services being healthy

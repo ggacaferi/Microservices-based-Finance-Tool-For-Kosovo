@@ -3,6 +3,7 @@ import { Entity, PrimaryColumn, Column, CreateDateColumn } from 'typeorm';
 @Entity('ledger_journal_entries')
 export class JournalEntryOrmEntity {
   @PrimaryColumn({ type: 'uuid' }) id!: string;
+  @Column({ type: 'uuid', nullable: true }) tenantId!: string;
   @Column() reference!: string;
   @Column({ type: 'date' }) date!: string;
   @Column({ type: 'varchar', length: 20 }) kind!: string;

@@ -1,146 +1,159 @@
 # Guri Finance
 
-An Event-Driven, Cloud-Native Microservices platform built strictly on **Domain-Driven Design (DDD)**, designed for SME accounting compliance with **Kosovo Law 06/L-032**.
+Event-driven accounting platform for Kosovo SMEs, built with DDD-style bounded contexts.
 
-## Architecture — Five Bounded Contexts
+## Current Architecture
 
-| # | Service | Role | Data Store | Key Responsibilities |
-|---|---------|------|-----------|---------------------|
-| 1 | **IAM Service** | The Gatekeeper | Postgres (`guri_iam`) | Authentication (JWT), authorization (RBAC), multi-tenant isolation, audit trails |
-| 2 | **Compliance Service** | The Rule Distributor | In-Memory Cache | Immutable Kosovo SKA and VAT tax codes. Distributes rules to other services |
-| 3 | **Operations Service** | The Workspace | Postgres (`guri_operations`) | Bills (AP), Invoices (AR), Inventory. Validates with Compliance rules, emits domain events |
-| 4 | **Ledger Service** | The Financial Truth | Postgres (`guri_ledger`) | Double-entry bookkeeping. Consumes events → creates journal entries with Storno logic |
-| 5 | **AI Service** | The Intelligence Layer | Postgres + pgvector (`guri_ai`) | Ingests journal entries into vector store, builds read-model, answers NL financial queries |
+### Services
 
-### Infrastructure Stack
+| Service | Port | Responsibility | Data |
+|---|---:|---|---|
+| `gateway` (nginx) | 3000 | Single entrypoint + routing to backend services | — |
+| `frontend` (React/Vite build served by nginx) | 80 | UI | — |
+| `iam` | 3001 | JWT auth, users, tenants, audit | Postgres `guri_iam` |
+| `compliance` | 3002 | Kosovo VAT/SKA taxonomy + compliance rules | In-memory taxonomy bundle |
+| `operations` | 3003 | Bills, invoices, inventory, storno workflows | Postgres `guri_operations` |
+| `ledger` | 3004 | Journal entries, trial balance, reports | Postgres `guri_ledger` |
+| `ai` | 3005 | Tenant-scoped financial analysis + Gemini integration | Postgres `guri_ai` (pgvector-ready) |
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **Databases** | PostgreSQL 16 (4 instances) | Per-service data isolation, one DB per bounded context |
-| **Vector Store** | pgvector on PostgreSQL | Embedding storage for RAG-based AI financial queries |
-| **Event Bus** | Google Cloud Pub/Sub | Async inter-service communication (3 topics, 3 subscriptions) |
-| **Orchestration** | Kubernetes (GKE) | Container orchestration with HPA, NetworkPolicy, Ingress |
-| **Containers** | Docker (multi-stage builds) | Backend (Node.js Alpine) + Frontend (Nginx Alpine) |
-| **Ingress** | GKE Ingress + Managed TLS | External routing, SSL termination |
+### Event Bus
 
-### Communication Flow (Lifecycle of a Bill Reversal)
+Kafka is the primary event bus:
 
-```
-Web Client → GKE Ingress → API Gateway Pod → IAM (JWT Verify) → Operations (Revert Bill)
-                                                                       ↓ Pub/Sub: billReverted
-                                                                 Ledger (Storno Journal Entry)
-                                                                       ↓ Pub/Sub: journalEntryPosted
-                                                                 AI Service (pgvector Ingest + Snapshot)
-```
+- `operations.events` → consumed by `ledger`
+- `ledger.events` → consumed by `ai`
 
-1. **Request**: User clicks "Revert Bill"
-2. **Auth Check (Sync)**: API Gateway verifies JWT via IAM Service (Postgres lookup)
-3. **Action (Sync)**: Operations validates against cached Compliance rules, saves reverted bill to Postgres
-4. **Event Publish (Async)**: Operations publishes `billReverted` to Google Cloud Pub/Sub → user gets 200 OK
-5. **Ledger Update (Async)**: Ledger subscribes, creates STORNO journal entry in Postgres, publishes `journalEntryPosted`
-6. **AI Sync (Async)**: AI Service subscribes, ingests event into pgvector store, updates read-model
+Flow:
 
-### Google Cloud Pub/Sub Topics
+1. Operations commits business state.
+2. Operations publishes to `operations.events`.
+3. Ledger consumes and posts journal entries.
+4. Ledger publishes to `ledger.events`.
+5. AI consumes and updates tenant read model/insights.
 
-| Topic | Publisher | Subscription | Consumer |
-|-------|-----------|-------------|----------|
-| `guri-finance.operations.bill-posted` | Operations | `guri-finance.ledger.bill-posted-sub` | Ledger |
-| `guri-finance.operations.bill-reverted` | Operations | `guri-finance.ledger.bill-reverted-sub` | Ledger |
-| `guri-finance.ledger.journal-entry-posted` | Ledger | `guri-finance.ai.journal-entry-posted-sub` | AI |
+## Local Development (Recommended)
 
-## Prerequisites
+### Prerequisites
 
-- Node.js v18+
-- Docker & Docker Compose (for Postgres + Pub/Sub emulator)
-- `kubectl` (for Kubernetes deployment)
-- Google Cloud SDK (for GKE deployment)
+- Docker + Docker Compose
+- Node.js 18+ (optional, for non-container development)
 
-## Quick Start — Local Development
+### Start everything
 
 ```bash
-# 1. Install dependencies
-npm install && cd frontend && npm install && cd ..
-
-# 2. Start infrastructure (4 Postgres DBs + Pub/Sub emulator)
-docker compose up -d
-
-# 3. Configure environment
-cp .env.example .env
-
-# 4. Start backend (auto-connects to Postgres + Pub/Sub)
-npm run start:dev
-
-# 5. Start frontend (separate terminal)
-npm --prefix frontend run dev
+docker compose up -d --build
 ```
 
-Backend API: **http://localhost:3000/api/v1**  
-Frontend: **http://localhost:5173**
+### Key URLs
 
-### Running Without Docker (in-memory fallback)
+- Gateway health: `http://localhost:3000/health`
+- API base: `http://localhost:3000/api/v1`
+- Frontend: `http://localhost/`
 
-All services gracefully fall back to in-memory storage when Postgres/Pub/Sub are unavailable:
+### Local infra started by Compose
+
+- 4 Postgres instances (`iam`, `operations`, `ledger`, `ai`)
+- Kafka + Zookeeper
+- All app services + gateway + frontend
+
+## AI Service Notes
+
+### Gemini
+
+AI uses Gemini via:
+
+- `GEMINI_API_KEY` (secret)
+- `GEMINI_MODEL` (currently `gemini-3-flash-preview`)
+
+For local Compose, secret is loaded from:
+
+- `services/ai/.env`
+
+### Tenant isolation
+
+AI endpoints require tenant context and are tenant-scoped:
+
+- `x-tenant-id` header required on:
+  - `GET /api/v1/ai/snapshot`
+  - `GET /api/v1/ai/insights`
+  - `GET /api/v1/ai/event-history`
+  - `POST /api/v1/ai/query`
+
+AI database sampling and reconciliation are filtered per tenant.
+
+## API Overview
+
+### IAM
+
+- `POST /api/v1/iam/register`
+- `POST /api/v1/iam/login`
+- `GET /api/v1/iam/me`
+- `POST /api/v1/iam/users`
+- `GET /api/v1/iam/users`
+- `GET /api/v1/iam/tenants`
+- `GET /api/v1/iam/audit`
+- `POST /api/v1/iam/verify`
+
+### Compliance
+
+- `GET /api/v1/compliance/summary`
+- `GET /api/v1/compliance/tax-categories`
+- `GET /api/v1/compliance/chart-of-accounts`
+- `GET /api/v1/compliance/rules`
+- `GET /api/v1/compliance/bundle`
+- `POST /api/v1/compliance/refresh`
+
+### Operations
+
+- `POST /api/v1/bills`
+- `POST /api/v1/bills/:id/post`
+- `POST /api/v1/bills/:id/reverse`
+- `GET /api/v1/bills/:id`
+- `POST /api/v1/invoices`
+- `POST /api/v1/invoices/:id/send`
+- `POST /api/v1/invoices/:id/pay`
+- `POST /api/v1/invoices/:id/reverse`
+- `POST /api/v1/inventory/movements`
+- `POST /api/v1/inventory/movements/:id/reverse`
+- `GET /api/v1/inventory/valuation`
+- `POST /api/v1/operations/storno`
+- `GET /api/v1/operations/activities`
+
+### Ledger
+
+- `GET /api/v1/ledger/journal-entries`
+- `GET /api/v1/ledger/journal-entries/:id`
+- `GET /api/v1/ledger/bill/:billId`
+- `GET /api/v1/ledger/trial-balance`
+- `GET /api/v1/ledger/summary`
+- `GET /api/v1/ledger/reports/profit-loss`
+- `GET /api/v1/ledger/reports/balance-sheet`
+
+### AI
+
+- `GET /api/v1/ai/snapshot`
+- `POST /api/v1/ai/query`
+- `GET /api/v1/ai/insights`
+- `GET /api/v1/ai/event-history`
+
+## Kubernetes (Updated Manifests)
+
+Kubernetes manifests are in `k8s/` and are aligned to the current split services + Kafka setup.
+
+### What is included
+
+- Namespace: `k8s/namespace.yaml`
+- Databases (StatefulSets): `k8s/postgres.yaml`
+- Kafka + Zookeeper (StatefulSets): `k8s/pubsub.yaml`
+- App deployments/services (gateway + frontend + all backend services): `k8s/deployments.yaml`
+- ConfigMaps: `k8s/configmaps.yaml`
+- Secrets (DB/JWT/Gemini): `k8s/secrets.yaml`
+- Ingress routing: `k8s/ingress.yaml`
+- HPAs + network policies: `k8s/hpa-network.yaml`
+
+### Apply order
 
 ```bash
-npm install
-npm run start:dev          # No env vars needed — runs fully in-memory
-```
-
-## Docker
-
-### Build Images
-
-```bash
-# Backend
-docker build -t guri-api:latest .
-
-# Frontend
-docker build -t guri-frontend:latest ./frontend
-```
-
-### Local Docker Compose
-
-```bash
-# Start all infrastructure (4 Postgres + Pub/Sub emulator)
-docker compose up -d
-
-# View logs
-docker compose logs -f
-
-# Stop
-docker compose down
-```
-
-**Containers started by Docker Compose:**
-
-| Container | Image | Port | Database |
-|-----------|-------|------|----------|
-| `guri-iam-db` | postgres:16-alpine | 5432 | `guri_iam` |
-| `guri-ops-db` | postgres:16-alpine | 5433 | `guri_operations` |
-| `guri-ledger-db` | postgres:16-alpine | 5434 | `guri_ledger` |
-| `guri-ai-db` | pgvector/pgvector:pg16 | 5435 | `guri_ai` |
-| `guri-pubsub` | google-cloud-cli:emulators | 8085 | — |
-
-## Kubernetes Deployment (GKE)
-
-### Cluster Setup
-
-```bash
-# Create GKE cluster
-gcloud container clusters create guri-finance \
-  --zone europe-west1-b \
-  --num-nodes 3 \
-  --machine-type e2-standard-2 \
-  --workload-pool=guri-finance-prod.svc.id.goog
-
-# Configure kubectl
-gcloud container clusters get-credentials guri-finance --zone europe-west1-b
-```
-
-### Deploy
-
-```bash
-# Apply manifests in order
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/secrets.yaml
 kubectl apply -f k8s/configmaps.yaml
@@ -149,200 +162,22 @@ kubectl apply -f k8s/postgres.yaml
 kubectl apply -f k8s/deployments.yaml
 kubectl apply -f k8s/ingress.yaml
 kubectl apply -f k8s/hpa-network.yaml
-
-# Verify
-kubectl -n guri-finance get pods
 ```
 
-### Kubernetes Resources
+### Important before production apply
 
-| Resource | Name | Type | Purpose |
-|----------|------|------|---------|
-| StatefulSet | `iam-postgres` | Database | IAM user/tenant data |
-| StatefulSet | `ops-postgres` | Database | Bills, invoices, inventory |
-| StatefulSet | `ledger-postgres` | Database | Journal entries |
-| StatefulSet | `ai-postgres` | Database | pgvector financial events |
-| Deployment | `api-gateway` | Backend | NestJS API (2 replicas, HPA to 10) |
-| Deployment | `frontend` | Frontend | Nginx + React SPA (2 replicas) |
-| Ingress | `guri-finance-ingress` | Routing | GKE Ingress with managed TLS |
-| HPA | `api-gateway-hpa` | Autoscaling | CPU 70% / Memory 80% thresholds |
-| NetworkPolicy | `postgres-access` | Security | Only backend pods can reach databases |
-| ServiceAccount | `guri-pubsub-sa` | Auth | Workload Identity for Pub/Sub access |
+1. Replace image names/tags in `k8s/deployments.yaml` with your real registry tags.
+2. Replace placeholder secrets in `k8s/secrets.yaml`.
+3. Ensure your ingress class matches your cluster (`ingressClassName` currently `nginx`).
 
-## Testing
+## Tests
 
 ```bash
-# All tests (21 unit + 44 e2e = 65 total)
-npm run test:all
-
-# Unit tests only
 npm test
-
-# E2E tests only
 npm run test:e2e
-
-# With coverage
+npm run test:all
 npm run test:cov
 ```
-
-## API Endpoints
-
-### IAM Service (`/api/v1/iam`)
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/iam/register` | Public | Register tenant + admin user, receive JWT |
-| POST | `/iam/login` | Public | Authenticate, receive JWT |
-| GET | `/iam/me` | JWT | Current user info from token |
-| POST | `/iam/users` | Admin | Create user within tenant |
-| GET | `/iam/users` | Accountant+ | List users in tenant |
-| GET | `/iam/tenants` | Admin | List all tenants |
-| GET | `/iam/audit` | Admin | View security audit log |
-| POST | `/iam/verify` | Public | Validate a JWT token |
-
-### Compliance Service (`/api/v1/compliance`)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/compliance/summary` | Cache status (version, counts) |
-| GET | `/compliance/tax-categories` | Kosovo VAT categories |
-| GET | `/compliance/chart-of-accounts` | Standard Chart of Accounts (SKA) |
-| GET | `/compliance/rules` | Compliance rules (optional `?context=bill`) |
-| GET | `/compliance/bundle` | Full distribution bundle for other services |
-| POST | `/compliance/refresh` | Force cache refresh (simulates law update) |
-
-### Operations Service (`/api/v1/bills`, `/invoices`, `/inventory`, `/operations`)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/bills` | Create draft bill |
-| POST | `/bills/:id/post` | Post bill (tax validation + domain events) |
-| POST | `/bills/:id/reverse` | Reverse bill via storno |
-| GET | `/bills/:id` | Get bill by ID |
-| POST | `/invoices` | Create draft invoice |
-| POST | `/invoices/:id/send` | Send invoice |
-| POST | `/invoices/:id/pay` | Mark invoice paid |
-| POST | `/invoices/:id/reverse` | Reverse invoice |
-| POST | `/inventory/movements` | Record receipt/issue |
-| POST | `/inventory/movements/:id/reverse` | Reverse movement |
-| GET | `/inventory/valuation` | Weighted-average valuation |
-| POST | `/operations/storno` | Unified storno endpoint (returns full workflow) |
-| GET | `/operations/activities` | Activity log |
-| GET | `/operations/financial-snapshot` | AI financial snapshot |
-
-### Ledger Service (`/api/v1/ledger`)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/ledger/journal-entries` | All entries (optional `?kind=STORNO`) |
-| GET | `/ledger/journal-entries/:id` | Single entry by ID |
-| GET | `/ledger/bill/:billId` | All entries for a bill |
-| GET | `/ledger/trial-balance` | Account-level debit/credit totals |
-| GET | `/ledger/summary` | Statistics (count, balanced status) |
-
-### AI Service (`/api/v1/ai`)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/ai/snapshot` | Current financial snapshot |
-| POST | `/ai/query` | Natural language financial query |
-| GET | `/ai/insights` | AI-generated insights |
-| GET | `/ai/event-history` | Ingested event read-model |
-
-## Domain Events (via Google Cloud Pub/Sub)
-
-| Event | Pub/Sub Topic | Publisher | Consumer |
-|-------|--------------|-----------|----------|
-| `billPosted` | `guri-finance.operations.bill-posted` | Operations → Postgres | Ledger → Postgres |
-| `billReverted` | `guri-finance.operations.bill-reverted` | Operations → Postgres | Ledger → Postgres |
-| `journalEntryPosted` | `guri-finance.ledger.journal-entry-posted` | Ledger → Postgres | AI → pgvector |
-
-## Tax Categories (Kosovo Law 06/L-032)
-
-| ID | Name | Rate | Legal Basis |
-|----|------|------|-------------|
-| 43 | Standard VAT | 18% | Article 27 |
-| 31 | Exempt (Blerjet pa TVSH) | 0% | Article 28 |
-| 28 | Reverse Charge (Ngarkesa e Kundërt) | 0% | Article 30 |
-| 08 | Reduced Rate | 8% | Article 27(2) |
-
-## Project Structure
-
-```
-src/
-├── app.module.ts                    # Root module — wires all bounded contexts
-├── daily-operations.module.ts       # Operations + Ledger + AI module (TypeORM per-DB)
-├── iam/                             # Bounded Context 1: Identity & Access → Postgres (guri_iam)
-│   ├── domain/                      #   User, Tenant entities
-│   ├── application/                 #   AuthService (async, Postgres-backed)
-│   ├── guards/                      #   JWT, Roles, Tenant guards
-│   └── infrastructure/              #   Controller, ORM entities, Postgres repos
-├── compliance/                      # Bounded Context 2: Compliance Engine → In-Memory Cache
-│   ├── domain/                      #   Tax taxonomy, SKA, rules
-│   ├── application/                 #   ComplianceService (versioned cache)
-│   └── infrastructure/              #   Controller
-├── application/                     # Bounded Context 3: Operations → Postgres (guri_operations)
-│   ├── bills/                       #   Bill service + DTOs
-│   ├── invoices/                    #   Invoice service + DTOs
-│   ├── inventory/                   #   Inventory service + DTOs
-│   ├── events/                      #   Google Cloud Pub/Sub event bus (with in-memory fallback)
-│   ├── ledger/                      #   Bounded Context 4: Ledger → Postgres (guri_ledger)
-│   ├── ai/                          #   Bounded Context 5: AI → pgvector (guri_ai)
-│   └── operations/                  #   Activity log
-├── domain/                          # Domain layer
-│   ├── bills/                       #   FaturaHyrese aggregate
-│   └── tax/                         #   TaxRuleService
-└── infrastructure/
-    ├── controllers/                 #   Health check
-    ├── database/                    #   Per-service Postgres configs (IAM, Ops, Ledger, AI)
-    ├── http/                        #   All REST controllers
-    └── persistence/
-        ├── bills/                   #   BillOrmEntity + Postgres repo
-        ├── ledger/                  #   JournalEntryOrmEntity + Postgres repo
-        └── ai/                      #   AiEventOrmEntity (pgvector-ready)
-
-frontend/
-├── Dockerfile                       # Multi-stage: build → nginx:alpine
-└── src/
-    ├── pages/
-    │   ├── IamPage.tsx              #   Register, login, RBAC, audit
-    │   ├── CompliancePage.tsx       #   Tax categories, SKA, rules
-    │   ├── DailyOpsPage.tsx         #   Bills, invoices, inventory, storno
-    │   ├── LedgerPage.tsx           #   Journal entries, trial balance
-    │   └── AiPage.tsx              #   NL queries, snapshot, insights
-    └── components/
-        └── Layout.tsx               #   App shell with sidebar navigation
-
-k8s/
-├── namespace.yaml                   # guri-finance namespace
-├── secrets.yaml                     # DB passwords, JWT secret
-├── configmaps.yaml                  # Per-service DB host/port/name configs
-├── pubsub.yaml                      # Workload Identity ServiceAccount for Pub/Sub
-├── postgres.yaml                    # 4 StatefulSets (IAM, Ops, Ledger, AI/pgvector)
-├── deployments.yaml                 # API gateway (2 replicas) + Frontend (2 replicas)
-├── ingress.yaml                     # GKE Ingress + Managed TLS
-└── hpa-network.yaml                 # HPA autoscaling + NetworkPolicy for DB isolation
-
-test/
-├── bill.service.spec.ts             # Unit: Bill lifecycle
-├── domain-events.spec.ts            # Unit: Event bus, Ledger, AI
-├── inventory.service.spec.ts        # Unit: Weighted-average costing
-├── app.e2e-spec.ts                  # E2E: Full AP/AR/Inventory lifecycles
-├── storno-workflow.e2e-spec.ts      # E2E: Storno + domain event flows
-└── bounded-contexts.e2e-spec.ts     # E2E: All 5 contexts + cross-context
-```
-
-## Environment Variables
-
-See [.env.example](.env.example) for the full list. Key variables:
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `IAM_DB_HOST` | — | Postgres host for IAM service |
-| `OPS_DB_HOST` | — | Postgres host for Operations service |
-| `LEDGER_DB_HOST` | — | Postgres host for Ledger service |
-| `AI_DB_HOST` | — | Postgres+pgvector host for AI service |
-| `PUBSUB_ENABLED` | `false` | Enable Google Cloud Pub/Sub |
-| `GOOGLE_CLOUD_PROJECT` | — | GCP project ID for Pub/Sub |
-| `PUBSUB_EMULATOR_HOST` | — | Local emulator endpoint (e.g., `localhost:8085`) |
-| `JWT_SECRET` | hardcoded | Secret for HMAC-SHA256 JWT signing |
-
-When none of the `*_DB_HOST` variables are set, all services run with **in-memory storage** — no Docker or Postgres required.
 
 ## License
 

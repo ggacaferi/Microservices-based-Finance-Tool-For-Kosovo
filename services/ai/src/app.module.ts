@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AiService } from './ai.service';
 import { AiController } from './ai.controller';
 import { AiEventOrmEntity } from './infrastructure/ai-event.orm-entity';
+import { KafkaLedgerConsumer } from './infrastructure/kafka-ledger.consumer';
 
 const host = process.env.AI_DB_HOST || process.env.POSTGRES_HOST;
 
@@ -14,6 +15,6 @@ const host = process.env.AI_DB_HOST || process.env.POSTGRES_HOST;
     ] : []),
   ],
   controllers: [AiController],
-  providers: [AiService],
+  providers: [AiService, KafkaLedgerConsumer],
 })
 export class AppModule {}

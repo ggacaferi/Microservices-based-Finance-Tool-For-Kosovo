@@ -1,16 +1,13 @@
-# ──────────────────────────────────────────────────────────
-# Horizontal Pod Autoscaler — scales API pods on load
-# ──────────────────────────────────────────────────────────
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: api-gateway-hpa
+  name: gateway-hpa
   namespace: guri-finance
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: api-gateway
+    name: gateway
   minReplicas: 2
   maxReplicas: 10
   metrics:
@@ -20,12 +17,69 @@ spec:
         target:
           type: Utilization
           averageUtilization: 70
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: operations-hpa
+  namespace: guri-finance
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: operations
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
     - type: Resource
       resource:
-        name: memory
+        name: cpu
         target:
           type: Utilization
-          averageUtilization: 80
+          averageUtilization: 75
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ledger-hpa
+  namespace: guri-finance
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ledger
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ai-hpa
+  namespace: guri-finance
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ai
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
 
 ---
 apiVersion: autoscaling/v2
@@ -39,7 +93,7 @@ spec:
     kind: Deployment
     name: frontend
   minReplicas: 2
-  maxReplicas: 5
+  maxReplicas: 6
   metrics:
     - type: Resource
       resource:
@@ -49,7 +103,6 @@ spec:
           averageUtilization: 80
 
 ---
-# Network policy — restrict DB access to backend pods only
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -69,3 +122,24 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kafka-access
+  namespace: guri-finance
+spec:
+  podSelector:
+    matchLabels:
+      app: kafka
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              tier: backend
+      ports:
+        - protocol: TCP
+          port: 9092

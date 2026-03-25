@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Post, Query } from '@nestjs/common';
 import { BillService } from '../application/bills/bill.service';
 import { InvoiceService } from '../application/invoices/invoice.service';
 import { InventoryService } from '../application/inventory/inventory.service';
@@ -13,13 +13,16 @@ export class OperationsController {
     private readonly activityLog: ActivityLogService,
   ) {}
 
+  private tenant(tenantId?: string): string { return tenantId || 'public'; }
+
   @Get('activities')
-  listActivities(@Query('limit') limit?: string) { return this.activityLog.list(limit ? Number(limit) : 20); }
+  listActivities(@Headers('x-tenant-id') t: string, @Query('limit') limit?: string) { return this.activityLog.list(this.tenant(t), limit ? Number(limit) : 20); }
 
   @Post('storno')
-  async storno(@Body() dto: { entityType: string; entityId: string; reason: string }) {
+  async storno(@Headers('x-tenant-id') t: string, @Body() dto: { entityType: string; entityId: string; reason: string }) {
+    const tenantId = this.tenant(t);
     if (dto.entityType === 'bill') {
-      const bill = await this.billService.reverseBill(dto.entityId, dto.reason);
+      const bill = await this.billService.reverseBill(tenantId, dto.entityId, dto.reason);
       return {
         id: bill.id, supplierId: bill.supplierId, issueDate: bill.issueDate,
         currency: bill.currency, status: bill.status, totalNetAmount: bill.totalNetAmount,
@@ -28,9 +31,9 @@ export class OperationsController {
       };
     }
     if (dto.entityType === 'invoice') {
-      const invoice = await this.invoiceService.reverse(dto.entityId, dto.reason);
+      const invoice = await this.invoiceService.reverse(tenantId, dto.entityId, dto.reason);
       return { ...invoice, totalNetAmount: this.invoiceService.totalNetAmount(invoice) };
     }
-    return this.inventoryService.reverseMovement(dto.entityId, dto.reason);
+    return this.inventoryService.reverseMovement(tenantId, dto.entityId, dto.reason);
   }
 }

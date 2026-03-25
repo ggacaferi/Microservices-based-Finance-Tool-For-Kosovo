@@ -7,7 +7,7 @@ import { CrossServiceEventPublisher } from '../../events/cross-service-event.pub
 
 export interface CreateBillInput {
   supplierId: string; issueDate: string; dueDate?: string; currency: string;
-  lineItems: { description: string; quantity: number; unitPrice: number; taxCategoryId: string }[];
+  lineItems: { description: string; quantity: number; unitPrice: number; taxCategoryId: string; accountCode: string }[];
 }
 
 @Injectable()
@@ -19,42 +19,50 @@ export class BillService {
     private readonly eventPublisher: CrossServiceEventPublisher,
   ) {}
 
-  async createBill(input: CreateBillInput): Promise<FaturaHyrese> {
+  async createBill(tenantId: string, input: CreateBillInput): Promise<FaturaHyrese> {
+    try { await this.complianceClient.validateOrThrow('bill', input); } catch (e: any) { throw new BadRequestException(e.message); }
     const bill = FaturaHyrese.createNew({
       supplierId: input.supplierId,
       issueDate: new Date(input.issueDate),
       dueDate: input.dueDate ? new Date(input.dueDate) : null,
       currency: input.currency,
-      lines: input.lineItems.map(l => ({ description: l.description, quantity: l.quantity, unitPrice: l.unitPrice, taxCategoryId: l.taxCategoryId })),
+      lines: input.lineItems.map(l => ({ description: l.description, quantity: l.quantity, unitPrice: l.unitPrice, taxCategoryId: l.taxCategoryId, accountCode: l.accountCode })),
     });
-    await this.billRepo.save(bill);
-    this.activityLog.record('BILL_DRAFT_CREATED', { entityId: bill.id, summary: `Bill draft created for supplier ${bill.supplierId}` });
+    await this.billRepo.save(tenantId, bill);
+    this.activityLog.record(tenantId, 'BILL_DRAFT_CREATED', { entityId: bill.id, summary: `Bill draft created for supplier ${bill.supplierId}` });
     return bill;
   }
 
-  async postBill(id: string): Promise<FaturaHyrese> {
-    const bill = await this.findOrFail(id);
+  async postBill(tenantId: string, id: string): Promise<FaturaHyrese> {
+    const bill = await this.findOrFail(tenantId, id);
+    try { await this.complianceClient.validateOrThrow('bill', {
+      supplierId: bill.supplierId,
+      issueDate: bill.issueDate,
+      dueDate: bill.dueDate,
+      currency: bill.currency,
+      lineItems: bill.lines.map((l: any) => ({ description: l.description, quantity: l.quantity, unitPrice: l.unitPrice, taxCategoryId: l.taxCategoryId, accountCode: l.accountCode })),
+    }); } catch (e: any) { throw new BadRequestException(e.message); }
     try { bill.post(this.complianceClient); } catch (e: any) { throw new BadRequestException(e.message); }
-    await this.billRepo.save(bill);
-    this.activityLog.record('BILL_POSTED', { entityId: bill.id, summary: `Bill ${bill.id} posted` });
-    await this.eventPublisher.publish({ type: 'billPosted', billId: bill.id, supplierId: bill.supplierId, totalNetAmount: bill.totalNetAmount, date: new Date().toISOString(), originalReference: `Bill-${bill.id}` });
+    await this.billRepo.save(tenantId, bill);
+    this.activityLog.record(tenantId, 'BILL_POSTED', { entityId: bill.id, summary: `Bill ${bill.id} posted` });
+    await this.eventPublisher.publish({ type: 'billPosted', tenantId, billId: bill.id, supplierId: bill.supplierId, totalNetAmount: bill.totalNetAmount, date: new Date().toISOString(), originalReference: `Bill-${bill.id}` });
     return bill;
   }
 
-  async reverseBill(id: string, reason: string): Promise<FaturaHyrese> {
-    const bill = await this.findOrFail(id);
+  async reverseBill(tenantId: string, id: string, reason: string): Promise<FaturaHyrese> {
+    const bill = await this.findOrFail(tenantId, id);
     try { bill.reverse(); } catch (e: any) { throw new BadRequestException(e.message); }
-    await this.billRepo.save(bill);
-    this.activityLog.record('BILL_STORNO', { entityId: bill.id, summary: `Bill ${bill.id} reverted. Reason: ${reason || 'n/a'}` });
-    await this.eventPublisher.publish({ type: 'billReverted', billId: bill.id, originalReference: `Bill-${bill.id}`, date: new Date().toISOString(), reason });
+    await this.billRepo.save(tenantId, bill);
+    this.activityLog.record(tenantId, 'BILL_STORNO', { entityId: bill.id, summary: `Bill ${bill.id} reverted. Reason: ${reason || 'n/a'}` });
+    await this.eventPublisher.publish({ type: 'billReverted', tenantId, billId: bill.id, originalReference: `Bill-${bill.id}`, date: new Date().toISOString(), reason });
     return bill;
   }
 
-  async getBill(id: string): Promise<FaturaHyrese>                   { return this.findOrFail(id); }
-  async listBills(status?: BillStatus): Promise<FaturaHyrese[]>       { return status ? this.billRepo.listByStatus(status) : this.billRepo.list(); }
+  async getBill(tenantId: string, id: string): Promise<FaturaHyrese>             { return this.findOrFail(tenantId, id); }
+  async listBills(tenantId: string, status?: BillStatus): Promise<FaturaHyrese[]> { return status ? this.billRepo.listByStatus(tenantId, status) : this.billRepo.list(tenantId); }
 
-  private async findOrFail(id: string): Promise<FaturaHyrese> {
-    const bill = await this.billRepo.findById(id);
+  private async findOrFail(tenantId: string, id: string): Promise<FaturaHyrese> {
+    const bill = await this.billRepo.findById(tenantId, id);
     if (!bill) throw new NotFoundException(`Bill ${id} not found`);
     return bill;
   }

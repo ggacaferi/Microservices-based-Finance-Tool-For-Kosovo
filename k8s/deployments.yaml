@@ -1,89 +1,62 @@
-# ──────────────────────────────────────────────────────────
-# Application Deployments — One per bounded context
-# All services share the same Docker image but receive
-# different env vars pointing to their own Postgres DB.
-#
-# In a true microservice split, each would have its own
-# image with only its bounded context code.
-# ──────────────────────────────────────────────────────────
-
-# ── API Gateway / Backend (all 5 services in monolith) ───
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: api-gateway
+  name: gateway
   namespace: guri-finance
   labels:
-    app: api-gateway
-    tier: backend
+    app: gateway
+    tier: edge
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: api-gateway
+      app: gateway
   template:
     metadata:
       labels:
-        app: api-gateway
-        tier: backend
+        app: gateway
+        tier: edge
     spec:
-      serviceAccountName: guri-pubsub-sa
       containers:
-        - name: api
-          image: gcr.io/guri-finance-prod/guri-api:latest
+        - name: gateway
+          image: gcr.io/guri-finance-prod/guri-gateway:latest
           ports:
             - containerPort: 3000
-          envFrom:
-            - configMapRef:
-                name: guri-finance-config
-            - configMapRef:
-                name: iam-db-config
-            - configMapRef:
-                name: ops-db-config
-            - configMapRef:
-                name: ledger-db-config
-            - configMapRef:
-                name: ai-db-config
-            - secretRef:
-                name: db-secrets
-            - secretRef:
-                name: jwt-secret
-          resources:
-            requests:
-              memory: "256Mi"
-              cpu: "250m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
           readinessProbe:
             httpGet:
-              path: /api/v1/health
+              path: /health
               port: 3000
-            initialDelaySeconds: 10
+            initialDelaySeconds: 8
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /api/v1/health
+              path: /health
               port: 3000
             initialDelaySeconds: 15
             periodSeconds: 20
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "400m"
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: api-gateway
+  name: gateway
   namespace: guri-finance
 spec:
   selector:
-    app: api-gateway
+    app: gateway
   ports:
-    - port: 3000
+    - name: http
+      port: 3000
       targetPort: 3000
-  type: ClusterIP
 
 ---
-# ── Frontend (Nginx + React) ────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -91,7 +64,7 @@ metadata:
   namespace: guri-finance
   labels:
     app: frontend
-    tier: frontend
+    tier: edge
 spec:
   replicas: 2
   selector:
@@ -101,26 +74,32 @@ spec:
     metadata:
       labels:
         app: frontend
-        tier: frontend
+        tier: edge
     spec:
       containers:
-        - name: nginx
+        - name: frontend
           image: gcr.io/guri-finance-prod/guri-frontend:latest
           ports:
             - containerPort: 80
-          resources:
-            requests:
-              memory: "64Mi"
-              cpu: "50m"
-            limits:
-              memory: "128Mi"
-              cpu: "100m"
           readinessProbe:
             httpGet:
               path: /
               port: 80
             initialDelaySeconds: 5
             periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
 
 ---
 apiVersion: v1
@@ -132,6 +111,357 @@ spec:
   selector:
     app: frontend
   ports:
-    - port: 80
+    - name: http
+      port: 80
       targetPort: 80
-  type: ClusterIP
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliance
+  namespace: guri-finance
+  labels:
+    app: compliance
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: compliance
+  template:
+    metadata:
+      labels:
+        app: compliance
+        tier: backend
+    spec:
+      containers:
+        - name: compliance
+          image: gcr.io/guri-finance-prod/guri-compliance:latest
+          ports:
+            - containerPort: 3002
+          envFrom:
+            - configMapRef:
+                name: guri-common-config
+          env:
+            - name: PORT
+              value: "3002"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3002
+            initialDelaySeconds: 8
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3002
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "300m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compliance
+  namespace: guri-finance
+spec:
+  selector:
+    app: compliance
+  ports:
+    - name: http
+      port: 3002
+      targetPort: 3002
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iam
+  namespace: guri-finance
+  labels:
+    app: iam
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: iam
+  template:
+    metadata:
+      labels:
+        app: iam
+        tier: backend
+    spec:
+      containers:
+        - name: iam
+          image: gcr.io/guri-finance-prod/guri-iam:latest
+          ports:
+            - containerPort: 3001
+          envFrom:
+            - configMapRef:
+                name: guri-common-config
+            - configMapRef:
+                name: iam-db-config
+            - secretRef:
+                name: db-secrets
+            - secretRef:
+                name: jwt-secret
+          env:
+            - name: PORT
+              value: "3001"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 8
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "350m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iam
+  namespace: guri-finance
+spec:
+  selector:
+    app: iam
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: operations
+  namespace: guri-finance
+  labels:
+    app: operations
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: operations
+  template:
+    metadata:
+      labels:
+        app: operations
+        tier: backend
+    spec:
+      containers:
+        - name: operations
+          image: gcr.io/guri-finance-prod/guri-operations:latest
+          ports:
+            - containerPort: 3003
+          envFrom:
+            - configMapRef:
+                name: guri-common-config
+            - configMapRef:
+                name: ops-db-config
+            - secretRef:
+                name: db-secrets
+          env:
+            - name: PORT
+              value: "3003"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3003
+            initialDelaySeconds: 8
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3003
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              memory: "192Mi"
+              cpu: "150m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: operations
+  namespace: guri-finance
+spec:
+  selector:
+    app: operations
+  ports:
+    - name: http
+      port: 3003
+      targetPort: 3003
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger
+  namespace: guri-finance
+  labels:
+    app: ledger
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ledger
+  template:
+    metadata:
+      labels:
+        app: ledger
+        tier: backend
+    spec:
+      containers:
+        - name: ledger
+          image: gcr.io/guri-finance-prod/guri-ledger:latest
+          ports:
+            - containerPort: 3004
+          envFrom:
+            - configMapRef:
+                name: guri-common-config
+            - configMapRef:
+                name: ledger-db-config
+            - secretRef:
+                name: db-secrets
+          env:
+            - name: PORT
+              value: "3004"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3004
+            initialDelaySeconds: 8
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3004
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              memory: "192Mi"
+              cpu: "150m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger
+  namespace: guri-finance
+spec:
+  selector:
+    app: ledger
+  ports:
+    - name: http
+      port: 3004
+      targetPort: 3004
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai
+  namespace: guri-finance
+  labels:
+    app: ai
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai
+  template:
+    metadata:
+      labels:
+        app: ai
+        tier: backend
+    spec:
+      containers:
+        - name: ai
+          image: gcr.io/guri-finance-prod/guri-ai:latest
+          ports:
+            - containerPort: 3005
+          envFrom:
+            - configMapRef:
+                name: guri-common-config
+            - configMapRef:
+                name: ai-db-config
+            - configMapRef:
+                name: iam-db-config
+            - configMapRef:
+                name: ops-db-config
+            - configMapRef:
+                name: ledger-db-config
+            - secretRef:
+                name: db-secrets
+            - secretRef:
+                name: ai-secrets
+          env:
+            - name: PORT
+              value: "3005"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3005
+            initialDelaySeconds: 8
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3005
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "768Mi"
+              cpu: "700m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai
+  namespace: guri-finance
+spec:
+  selector:
+    app: ai
+  ports:
+    - name: http
+      port: 3005
+      targetPort: 3005

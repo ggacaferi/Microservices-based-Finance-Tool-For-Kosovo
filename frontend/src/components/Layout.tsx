@@ -1,5 +1,5 @@
 import React from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 
 interface LayoutProps {
   title: string;
@@ -34,15 +34,19 @@ const SparkleIcon = () => (
     <path strokeLinecap="round" strokeLinejoin="round" d="M5 3l1.5 4.5L11 9l-4.5 1.5L5 15l-1.5-4.5L-1 9l4.5-1.5L5 3zM19 11l1 3 3 1-3 1-1 3-1-3-3-1 3-1 1-3z"/>
   </svg>
 );
-const UserIcon = () => (
-  <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
-    <circle cx="9" cy="7" r="4"/>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
-  </svg>
-);
-
 export const Layout: React.FC<LayoutProps> = ({ title, subtitle, children }) => {
+  const navigate = useNavigate();
+  const raw = localStorage.getItem('guri_user');
+  const user = raw ? JSON.parse(raw) : null;
+  const role = user?.role as 'admin' | 'accountant' | 'data_clerk' | 'auditor' | undefined;
+  const can = (roles: Array<'admin' | 'accountant' | 'data_clerk' | 'auditor'>) => Boolean(role && roles.includes(role));
+
+  const logout = () => {
+    localStorage.removeItem('guri_token');
+    localStorage.removeItem('guri_user');
+    navigate('/auth');
+  };
+
   return (
     <div className="app-shell">
       {/* ── Sidebar ─────────────────────────────── */}
@@ -56,37 +60,37 @@ export const Layout: React.FC<LayoutProps> = ({ title, subtitle, children }) => 
         </div>
 
         <nav className="sidebar-nav">
-          <div className="nav-group">
-            <div className="nav-group-label">Accounting</div>
-            <NavLink to="/daily-ops" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-              <BriefcaseIcon />
-              Daily Operations
-            </NavLink>
-            <NavLink to="/ledger" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-              <BookIcon />
-              General Ledger
-            </NavLink>
-          </div>
+          {(can(['admin', 'accountant', 'data_clerk']) || can(['admin', 'accountant', 'auditor'])) && (
+            <div className="nav-group">
+              <div className="nav-group-label">Accounting</div>
+              {can(['admin', 'accountant', 'data_clerk']) && (
+                <NavLink to="/daily-ops" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+                  <BriefcaseIcon />
+                  Daily Operations
+                </NavLink>
+              )}
+              {can(['admin', 'accountant', 'auditor']) && (
+                <NavLink to="/ledger" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+                  <BookIcon />
+                  General Ledger
+                </NavLink>
+              )}
+            </div>
+          )}
 
-          <div className="nav-group">
-            <div className="nav-group-label">Intelligence</div>
-            <NavLink to="/ai" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-              <SparkleIcon />
-              AI Analyst
-            </NavLink>
-            <NavLink to="/compliance" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-              <CheckIcon />
-              Compliance
-            </NavLink>
-          </div>
-
-          <div className="nav-group">
-            <div className="nav-group-label">Platform</div>
-            <NavLink to="/iam" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-              <UserIcon />
-              Identity & Access
-            </NavLink>
-          </div>
+          {can(['admin', 'accountant', 'auditor']) && (
+            <div className="nav-group">
+              <div className="nav-group-label">Intelligence</div>
+              <NavLink to="/ai" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+                <SparkleIcon />
+                AI Analyst
+              </NavLink>
+              <NavLink to="/compliance" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+                <CheckIcon />
+                Compliance
+              </NavLink>
+            </div>
+          )}
         </nav>
 
         <div className="sidebar-footer">
@@ -105,6 +109,13 @@ export const Layout: React.FC<LayoutProps> = ({ title, subtitle, children }) => 
             {subtitle && <div className="page-subtitle">{subtitle}</div>}
           </div>
           <div className="topbar-right">
+            {user?.role === 'admin' && (
+              <button className="btn btn-secondary btn-sm" onClick={() => navigate('/platform/iam')}>
+                IAM
+              </button>
+            )}
+            {user?.role && <span className="badge badge-slate">{user.role}</span>}
+            <button className="btn btn-secondary btn-sm" onClick={logout}>Logout</button>
             <div className="topbar-badge">
               <div className="status-dot" style={{ width: 6, height: 6 }} />
               Live — Kosovo Law 06/L-032

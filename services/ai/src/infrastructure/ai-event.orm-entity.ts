@@ -10,6 +10,7 @@ import { Entity, PrimaryColumn, Column, CreateDateColumn } from 'typeorm';
 @Entity('ai_financial_events')
 export class AiEventOrmEntity {
   @PrimaryColumn({ type: 'uuid' }) id!: string;
+  @Column({ default: 'public' }) tenantId!: string;
   @Column() reference!: string;
   @Column({ type: 'decimal', precision: 15, scale: 2 }) amount!: number;
   @Column({ type: 'date' }) date!: string;

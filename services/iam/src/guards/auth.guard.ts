@@ -38,7 +38,7 @@ export class RolesGuard implements CanActivate {
     const user = request.user as JwtPayload | undefined;
     if (!user) throw new UnauthorizedException('Authentication required.');
 
-    const hierarchy: Record<UserRole, number> = { admin: 40, accountant: 30, auditor: 20, viewer: 10 };
+    const hierarchy: Record<UserRole, number> = { admin: 40, accountant: 30, data_clerk: 25, auditor: 20 };
     const userLevel = hierarchy[user.role] ?? 0;
     const minRequired = Math.min(...requiredRoles.map(r => hierarchy[r] ?? 99));
     if (userLevel < minRequired) throw new UnauthorizedException(`Insufficient permissions. Required: ${requiredRoles.join('/')}, your role: ${user.role}`);

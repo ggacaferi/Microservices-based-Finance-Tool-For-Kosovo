@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 
-export type UserRole = 'admin' | 'accountant' | 'auditor' | 'viewer';
+export type UserRole = 'admin' | 'accountant' | 'data_clerk' | 'auditor';
 
 export interface CreateUserProps {
   email: string;
@@ -64,7 +64,7 @@ export class User {
       hash,
       props.fullName.trim(),
       props.tenantId.trim(),
-      props.role ?? 'viewer',
+      props.role ?? 'data_clerk',
       true,
       new Date().toISOString(),
     );
@@ -104,8 +104,8 @@ export class User {
     const hierarchy: Record<UserRole, number> = {
       admin: 40,
       accountant: 30,
+      data_clerk: 25,
       auditor: 20,
-      viewer: 10,
     };
     return hierarchy[this.role] >= hierarchy[requiredRole];
   }

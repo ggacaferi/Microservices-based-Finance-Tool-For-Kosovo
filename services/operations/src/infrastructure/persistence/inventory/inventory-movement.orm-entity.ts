@@ -3,6 +3,7 @@ import { Entity, PrimaryColumn, Column, CreateDateColumn } from 'typeorm';
 @Entity('ops_inventory_movements')
 export class InventoryMovementOrmEntity {
   @PrimaryColumn({ type: 'uuid' }) id!: string;
+  @Column({ type: 'uuid', nullable: true }) tenantId!: string;
   @Column() sku!: string;
   @Column() description!: string;
   @Column({ type: 'varchar', length: 10 }) type!: string;

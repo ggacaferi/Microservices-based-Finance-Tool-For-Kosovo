@@ -40,6 +40,6 @@ export class CreateUserDto {
   fullName!: string;
 
   @IsString()
-  @IsIn(['admin', 'accountant', 'auditor', 'viewer'])
+  @IsIn(['admin', 'accountant', 'data_clerk', 'auditor'])
   role!: UserRole;
 }

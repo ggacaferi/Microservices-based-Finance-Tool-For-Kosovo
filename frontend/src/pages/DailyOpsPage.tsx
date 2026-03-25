@@ -2,15 +2,17 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
 /* ─── Types ────────────────────────────────────────────── */
-interface BillLineForm   { description: string; quantity: number; unitPrice: number; taxCategoryId: string; }
-interface InvoiceLineForm { description: string; quantity: number; unitPrice: number; }
+interface BillLineForm   { description: string; quantity: number; unitPrice: number; taxCategoryId: string; accountCode: string; }
+interface InvoiceLineForm { description: string; quantity: number; unitPrice: number; accountCode: string; }
 interface BillResponse   { id: string; supplierId: string; issueDate: string; dueDate?: string | null; currency: string; status: string; totalNetAmount: number; lines: any[]; workflow?: any; }
 interface InvoiceResponse { id: string; customerId: string; issueDate: string; dueDate?: string | null; currency: string; status: string; totalNetAmount: number; lines: any[]; }
 interface InventoryValuation { totalValue: number; items: any[]; movements: any[]; }
 interface ActivityEntry { id: string; type: string; entityId?: string; summary: string; at: string; }
+interface AccountItem { code: string; name: string; type: 'ASSET' | 'LIABILITY' | 'EQUITY' | 'REVENUE' | 'EXPENSE'; parentCode?: string; }
+interface TaxCategoryItem { id: string; name: string; rate: number; }
 
-const emptyBillLine: BillLineForm    = { description: '', quantity: 1, unitPrice: 0, taxCategoryId: '43' };
-const emptyInvLine: InvoiceLineForm  = { description: '', quantity: 1, unitPrice: 0 };
+const emptyBillLine: BillLineForm    = { description: '', quantity: 1, unitPrice: 0, taxCategoryId: '43', accountCode: '665-09' };
+const emptyInvLine: InvoiceLineForm  = { description: '', quantity: 1, unitPrice: 0, accountCode: '' };
 
 const statusBadge = (s: string) => {
   if (s === 'POSTED' || s === 'SENT' || s === 'PAID') return 'badge-green';
@@ -52,11 +54,23 @@ export const DailyOpsPage: React.FC = () => {
 
   /* Shared */
   const [activities,   setActivities]  = useState<ActivityEntry[]>([]);
+  const [accounts,     setAccounts]    = useState<AccountItem[]>([]);
+  const [taxCategories, setTaxCategories] = useState<TaxCategoryItem[]>([]);
   const [loading,      setLoading]     = useState(false);
   const [error,        setError]       = useState<string | null>(null);
   const [success,      setSuccess]     = useState<string | null>(null);
 
   const api = axios.create({ baseURL: '/api/v1' });
+  api.interceptors.request.use((config) => {
+    const token = localStorage.getItem('guri_token');
+    const rawUser = localStorage.getItem('guri_user');
+    let tenantId: string | undefined;
+    try { tenantId = rawUser ? JSON.parse(rawUser)?.tenantId : undefined; } catch {}
+    config.headers = config.headers || {};
+    if (token) (config.headers as any).Authorization = `Bearer ${token}`;
+    if (tenantId) (config.headers as any)['x-tenant-id'] = tenantId;
+    return config;
+  });
 
   const msg = (type: 'success' | 'error', text: string) => {
     if (type === 'success') { setSuccess(text); setError(null); }
@@ -76,12 +90,13 @@ export const DailyOpsPage: React.FC = () => {
 
   /* ── Bill handlers ──────────────────────────── */
   const editBillLine = (i: number, f: keyof BillLineForm, v: string) =>
-    setBillLines(p => p.map((l, j) => j !== i ? l : { ...l, [f]: f === 'description' || f === 'taxCategoryId' ? v : Number(v) }));
+    setBillLines(p => p.map((l, j) => j !== i ? l : { ...l, [f]: f === 'description' || f === 'taxCategoryId' || f === 'accountCode' ? v : Number(v) }));
 
   const createBill = () => wrap(async () => {
     const res = await api.post<BillResponse>('/bills/', { supplierId, issueDate, currency, lineItems: billLines });
-    setActiveBill(res.data); setBillLookup(res.data.id); setStornoEntityId(res.data.id);
-    await loadActivities(); msg('success', `Bill created: ${res.data.id}`);
+    const posted = await api.post<BillResponse>(`/bills/${res.data.id}/post`);
+    setActiveBill(posted.data); setBillLookup(posted.data.id); setStornoEntityId(posted.data.id);
+    await loadActivities(); msg('success', `Bill created and posted: ${posted.data.id}`);
   });
 
   const postBill = () => wrap(async () => {
@@ -97,12 +112,13 @@ export const DailyOpsPage: React.FC = () => {
 
   /* ── Invoice handlers ───────────────────────── */
   const editInvLine = (i: number, f: keyof InvoiceLineForm, v: string) =>
-    setInvLines(p => p.map((l, j) => j !== i ? l : { ...l, [f]: f === 'description' ? v : Number(v) }));
+    setInvLines(p => p.map((l, j) => j !== i ? l : { ...l, [f]: f === 'description' || f === 'accountCode' ? v : Number(v) }));
 
   const createInvoice = () => wrap(async () => {
     const res = await api.post<InvoiceResponse>('/invoices/', { customerId, issueDate, currency, lines: invLines });
-    setActiveInvoice(res.data); setInvLookup(res.data.id); setStornoEntityId(res.data.id);
-    await loadActivities(); msg('success', `Invoice created: ${res.data.id}`);
+    const sent = await api.post<InvoiceResponse>(`/invoices/${res.data.id}/send`);
+    setActiveInvoice(sent.data); setInvLookup(sent.data.id); setStornoEntityId(sent.data.id);
+    await loadActivities(); msg('success', `Invoice created and sent: ${sent.data.id}`);
   });
 
   const sendInvoice = () => wrap(async () => {
@@ -149,11 +165,25 @@ export const DailyOpsPage: React.FC = () => {
     const res = await api.get<InventoryValuation>('/inventory/valuation');
     setValuation(res.data);
   };
+  const loadAccounts = async () => {
+    const res = await api.get<AccountItem[]>('/compliance/chart-of-accounts');
+    setAccounts(res.data || []);
+  };
+  const loadTaxCategories = async () => {
+    const res = await api.get<TaxCategoryItem[]>('/compliance/tax-categories');
+    setTaxCategories(res.data || []);
+  };
 
   useEffect(() => {
     loadActivities().catch(() => {});
     loadValuation().catch(() => {});
+    loadAccounts().catch(() => {});
+    loadTaxCategories().catch(() => {});
   }, []);
+
+  const parentCodes = new Set(accounts.map(a => a.parentCode).filter(Boolean) as string[]);
+  const leafAccounts = accounts.filter(a => !parentCodes.has(a.code));
+  const expenseLeafAccounts = leafAccounts.filter(a => a.type === 'EXPENSE');
 
   /* ── Render ─────────────────────────────────── */
   return (
@@ -209,6 +239,7 @@ export const DailyOpsPage: React.FC = () => {
                       <th style={{ width: 90 }}>Qty</th>
                       <th style={{ width: 110 }}>Unit Price</th>
                       <th style={{ width: 160 }}>VAT Category</th>
+                      <th style={{ width: 220 }}>Llogaria (nen-kategori)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -219,9 +250,16 @@ export const DailyOpsPage: React.FC = () => {
                         <td><input className="input" type="number" value={l.unitPrice} onChange={e => editBillLine(i, 'unitPrice', e.target.value)} /></td>
                         <td>
                           <select className="select" value={l.taxCategoryId} onChange={e => editBillLine(i, 'taxCategoryId', e.target.value)}>
-                            <option value="43">43 · Standard 18%</option>
-                            <option value="31">31 · Exempt 0%</option>
-                            <option value="28">28 · Reverse Charge</option>
+                            {taxCategories.map(tc => (
+                              <option key={tc.id} value={tc.id}>{tc.name} ({(tc.rate * 100).toFixed(0)}%)</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td>
+                          <select className="select" value={l.accountCode} onChange={e => editBillLine(i, 'accountCode', e.target.value)}>
+                            {expenseLeafAccounts.map(a => (
+                              <option key={a.code} value={a.code}>{a.code} · {a.name}</option>
+                            ))}
                           </select>
                         </td>
                       </tr>
@@ -266,11 +304,12 @@ export const DailyOpsPage: React.FC = () => {
                   </div>
 
                   <table className="erp-table">
-                    <thead><tr><th>Description</th><th className="text-right">Qty</th><th className="text-right">Unit Price</th><th className="text-right">Net</th></tr></thead>
+                    <thead><tr><th>Description</th><th>Llogaria</th><th className="text-right">Qty</th><th className="text-right">Unit Price</th><th className="text-right">Net</th></tr></thead>
                     <tbody>
                       {activeBill.lines?.map((l: any, i: number) => (
                         <tr key={i}>
                           <td>{l.description}</td>
+                          <td className="text-mono">{l.accountCode ?? '—'}</td>
                           <td className="col-amount">{l.quantity}</td>
                           <td className="col-amount">€{l.unitPrice?.toFixed(2)}</td>
                           <td className="col-amount">€{(l.quantity * l.unitPrice)?.toFixed(2)}</td>

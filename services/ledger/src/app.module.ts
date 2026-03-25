@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { LedgerService } from './ledger.service';
 import { LedgerController } from './ledger.controller';
 import { JournalEntryOrmEntity } from './infrastructure/journal-entry.orm-entity';
+import { KafkaOperationsConsumer } from './infrastructure/kafka-operations.consumer';
 
 const host = process.env.LEDGER_DB_HOST || process.env.POSTGRES_HOST;
 
@@ -14,6 +15,6 @@ const host = process.env.LEDGER_DB_HOST || process.env.POSTGRES_HOST;
     ] : []),
   ],
   controllers: [LedgerController],
-  providers: [LedgerService],
+  providers: [LedgerService, KafkaOperationsConsumer],
 })
 export class AppModule {}

@@ -1,9 +1,11 @@
-import { Injectable, NotFoundException, Optional, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 import { ActivityLogService } from '../operations/activity-log.service';
 import { InventoryMovementOrmEntity } from '../../infrastructure/persistence/inventory/inventory-movement.orm-entity';
+import { CrossServiceEventPublisher } from '../../events/cross-service-event.publisher';
+import { ComplianceClient } from '../../compliance/compliance.client';
 
 export type InventoryMovementType = 'RECEIPT' | 'ISSUE';
 
@@ -21,9 +23,13 @@ export interface InventoryMovement {
 export class InventoryService implements OnModuleInit {
   private readonly items     = new Map<string, InventoryItem>();
   private readonly movements = new Map<string, InventoryMovement>();
+  private mKey(tenantId: string, id: string) { return `${tenantId}:${id}`; }
+  private iKey(tenantId: string, sku: string) { return `${tenantId}:${sku}`; }
 
   constructor(
     private readonly activityLogService: ActivityLogService,
+    private readonly eventPublisher: CrossServiceEventPublisher,
+    private readonly complianceClient: ComplianceClient,
     @Optional() @InjectRepository(InventoryMovementOrmEntity, 'operations')
     private readonly orm?: Repository<InventoryMovementOrmEntity>,
   ) {}
@@ -39,27 +45,28 @@ export class InventoryService implements OnModuleInit {
         note: r.note ?? undefined, createdAt: r.createdAt.toISOString(),
         reversedByMovementId: r.reversedByMovementId ?? undefined,
       };
-      this.movements.set(mv.id, mv);
-      const item = this.ensureItem(mv.sku, mv.description);
+      this.movements.set(this.mKey(r.tenantId, mv.id), mv);
+      const item = this.ensureItem(r.tenantId, mv.sku, mv.description);
       this.applyMovement(item, mv);
     }
   }
 
-  private async persistMovement(mv: InventoryMovement): Promise<void> {
+  private async persistMovement(tenantId: string, mv: InventoryMovement): Promise<void> {
     if (!this.orm) return;
     await this.orm.save({
-      id: mv.id, sku: mv.sku, description: mv.description, type: mv.type,
+      id: mv.id, tenantId, sku: mv.sku, description: mv.description, type: mv.type,
       quantity: mv.quantity, unitCost: mv.unitCost, note: mv.note ?? null,
       reversedByMovementId: mv.reversedByMovementId ?? null,
     });
   }
 
-  async recordMovement(input: {
+  async recordMovement(tenantId: string, input: {
     sku: string; description: string; type: InventoryMovementType;
     quantity: number; unitCost?: number; note?: string;
   }): Promise<InventoryMovement> {
+    try { await this.complianceClient.validateOrThrow('inventory', input); } catch (e: any) { throw new BadRequestException(e.message); }
     if (input.quantity <= 0) throw new Error('Quantity must be greater than zero');
-    const item = this.ensureItem(input.sku, input.description);
+    const item = this.ensureItem(tenantId, input.sku, input.description);
     let unitCostToUse = input.unitCost ?? item.averageUnitCost;
     if (input.type === 'RECEIPT' && unitCostToUse < 0) throw new Error('Receipt unit cost cannot be negative');
     if (input.type === 'ISSUE') {
@@ -72,39 +79,52 @@ export class InventoryService implements OnModuleInit {
       createdAt: new Date().toISOString(),
     };
     this.applyMovement(item, movement);
-    this.movements.set(movement.id, movement);
-    await this.persistMovement(movement);
-    this.activityLogService.record('INVENTORY_MOVEMENT', { entityId: movement.id, summary: `${movement.type} ${movement.quantity} units for ${movement.sku}`, metadata: { sku: movement.sku } });
+    this.movements.set(this.mKey(tenantId, movement.id), movement);
+    await this.persistMovement(tenantId, movement);
+    await this.eventPublisher.publish({
+      type: 'inventoryMovementRecorded',
+      tenantId,
+      movementId: movement.id,
+      sku: movement.sku,
+      movementType: movement.type,
+      quantity: movement.quantity,
+      unitCost: movement.unitCost,
+      totalValue: movement.quantity * movement.unitCost,
+      date: movement.createdAt,
+      reference: `Inventory-${movement.id}`,
+    });
+    this.activityLogService.record(tenantId, 'INVENTORY_MOVEMENT', { entityId: movement.id, summary: `${movement.type} ${movement.quantity} units for ${movement.sku}`, metadata: { sku: movement.sku } });
     return movement;
   }
 
-  async reverseMovement(id: string, reason: string): Promise<InventoryMovement> {
-    const original = this.movements.get(id);
+  async reverseMovement(tenantId: string, id: string, reason: string): Promise<InventoryMovement> {
+    const original = this.movements.get(this.mKey(tenantId, id));
     if (!original) throw new NotFoundException(`Inventory movement with id ${id} not found`);
     if (original.reversedByMovementId) throw new Error('Inventory movement already reversed');
     const reverseType: InventoryMovementType = original.type === 'RECEIPT' ? 'ISSUE' : 'RECEIPT';
-    const reversal = await this.recordMovement({
+    const reversal = await this.recordMovement(tenantId, {
       sku: original.sku, description: `${original.description} (storno)`,
       type: reverseType, quantity: original.quantity, unitCost: original.unitCost,
       note: `Storno of ${original.id}. Reason: ${reason || 'n/a'}`,
     });
     original.reversedByMovementId = reversal.id;
-    await this.persistMovement(original);
-    this.activityLogService.record('INVENTORY_STORNO', { entityId: reversal.id, summary: `Inventory movement ${original.id} reversed. Reason: ${reason || 'n/a'}` });
+    await this.persistMovement(tenantId, original);
+    this.activityLogService.record(tenantId, 'INVENTORY_STORNO', { entityId: reversal.id, summary: `Inventory movement ${original.id} reversed. Reason: ${reason || 'n/a'}` });
     return reversal;
   }
 
-  getValuation() {
+  getValuation(tenantId: string) {
     return {
-      totalValue: Array.from(this.items.values()).reduce((s, i) => s + i.quantityOnHand * i.averageUnitCost, 0),
-      items: Array.from(this.items.values()).sort((a, b) => a.sku.localeCompare(b.sku)),
-      movements: Array.from(this.movements.values()).sort((a, b) => a.createdAt > b.createdAt ? -1 : 1),
+      totalValue: Array.from(this.items.entries()).filter(([k]) => k.startsWith(`${tenantId}:`)).map(([, i]) => i).reduce((s, i) => s + i.quantityOnHand * i.averageUnitCost, 0),
+      items: Array.from(this.items.entries()).filter(([k]) => k.startsWith(`${tenantId}:`)).map(([, i]) => i).sort((a, b) => a.sku.localeCompare(b.sku)),
+      movements: Array.from(this.movements.entries()).filter(([k]) => k.startsWith(`${tenantId}:`)).map(([, m]) => m).sort((a, b) => a.createdAt > b.createdAt ? -1 : 1),
     };
   }
 
-  private ensureItem(sku: string, description: string): InventoryItem {
-    if (!this.items.has(sku)) this.items.set(sku, { sku, description, quantityOnHand: 0, averageUnitCost: 0 });
-    return this.items.get(sku)!;
+  private ensureItem(tenantId: string, sku: string, description: string): InventoryItem {
+    const key = this.iKey(tenantId, sku);
+    if (!this.items.has(key)) this.items.set(key, { sku, description, quantityOnHand: 0, averageUnitCost: 0 });
+    return this.items.get(key)!;
   }
 
   private applyMovement(item: InventoryItem, mv: InventoryMovement) {

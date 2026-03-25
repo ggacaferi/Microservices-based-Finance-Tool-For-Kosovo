@@ -1,54 +1,146 @@
-# ──────────────────────────────────────────────────────────
-# Google Cloud Pub/Sub — Topic & Subscription Setup
-#
-# These are GCP-managed resources. This file documents
-# the required Pub/Sub topology. Provision via:
-#   - Terraform (google_pubsub_topic / google_pubsub_subscription)
-#   - gcloud CLI
-#   - Or let the application auto-create them on startup
-#
-# The DomainEventBus creates these automatically if they
-# don't exist (see domain-event.bus.ts).
-# ──────────────────────────────────────────────────────────
-
-# Topics (publishers)
-# ─────────────────────────────────────────────────────────
-# Topic: guri-finance.operations.bill-posted
-#   Publisher:  Operations Service
-#   Payload:    { type, billId, supplierId, totalNetAmount, date, originalReference }
-#
-# Topic: guri-finance.operations.bill-reverted
-#   Publisher:  Operations Service
-#   Payload:    { type, originalReference, billId, date, reason }
-#
-# Topic: guri-finance.ledger.journal-entry-posted
-#   Publisher:  Ledger Service
-#   Payload:    { type, journalEntryId, reference, date, deltaExpenses }
-
-# Subscriptions (consumers)
-# ─────────────────────────────────────────────────────────
-# Subscription: guri-finance.ledger.bill-posted-sub
-#   Topic:      guri-finance.operations.bill-posted
-#   Consumer:   Ledger Service
-#   Action:     Create ORIGINAL journal entry
-#
-# Subscription: guri-finance.ledger.bill-reverted-sub
-#   Topic:      guri-finance.operations.bill-reverted
-#   Consumer:   Ledger Service
-#   Action:     Create STORNO journal entry
-#
-# Subscription: guri-finance.ai.journal-entry-posted-sub
-#   Topic:      guri-finance.ledger.journal-entry-posted
-#   Consumer:   AI Service
-#   Action:     Update financial snapshot + ingest to pgvector
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zookeeper
+  namespace: guri-finance
+  labels:
+    app: zookeeper
+    tier: messaging
+spec:
+  serviceName: zookeeper
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zookeeper
+  template:
+    metadata:
+      labels:
+        app: zookeeper
+        tier: messaging
+    spec:
+      containers:
+        - name: zookeeper
+          image: confluentinc/cp-zookeeper:7.6.1
+          ports:
+            - containerPort: 2181
+          env:
+            - name: ZOOKEEPER_CLIENT_PORT
+              value: "2181"
+            - name: ZOOKEEPER_TICK_TIME
+              value: "2000"
+          volumeMounts:
+            - name: zk-data
+              mountPath: /var/lib/zookeeper/data
+          readinessProbe:
+            tcpSocket:
+              port: 2181
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "300m"
+  volumeClaimTemplates:
+    - metadata:
+        name: zk-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
 
 ---
-# Workload Identity — allows GKE pods to authenticate to Pub/Sub
 apiVersion: v1
-kind: ServiceAccount
+kind: Service
 metadata:
-  name: guri-pubsub-sa
+  name: zookeeper
   namespace: guri-finance
-  annotations:
-    # Bind to a GCP service account with roles/pubsub.editor
-    iam.gke.io/gcp-service-account: guri-pubsub@guri-finance-prod.iam.gserviceaccount.com
+spec:
+  selector:
+    app: zookeeper
+  ports:
+    - name: client
+      port: 2181
+      targetPort: 2181
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: guri-finance
+  labels:
+    app: kafka
+    tier: messaging
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+        tier: messaging
+    spec:
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.6.1
+          ports:
+            - containerPort: 9092
+          env:
+            - name: KAFKA_BROKER_ID
+              value: "1"
+            - name: KAFKA_ZOOKEEPER_CONNECT
+              value: "zookeeper:2181"
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://0.0.0.0:9092"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://kafka.guri-finance.svc.cluster.local:9092"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null"]
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "750m"
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: guri-finance
+spec:
+  selector:
+    app: kafka
+  ports:
+    - name: broker
+      port: 9092
+      targetPort: 9092

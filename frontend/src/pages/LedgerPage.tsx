@@ -9,7 +9,23 @@ export const LedgerPage: React.FC = () => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [billIdLookup, setBillIdLookup] = useState('');
   const [billWorkflow, setBillWorkflow] = useState<any>(null);
-  const [tab, setTab] = useState<'entries' | 'trial' | 'lookup'>('entries');
+  const [tab, setTab] = useState<'entries' | 'trial' | 'lookup' | 'reports'>('entries');
+  const [reportYear, setReportYear] = useState<number>(new Date().getFullYear());
+  const [reportQuarter, setReportQuarter] = useState<number>(Math.floor(new Date().getMonth() / 3) + 1);
+
+  const download = async (kind: 'profit-loss' | 'balance-sheet') => {
+    const res = await axios.get(`/api/v1/ledger/reports/${kind}?year=${reportYear}&quarter=${reportQuarter}`, {
+      responseType: 'blob',
+    });
+    const url = window.URL.createObjectURL(new Blob([res.data], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tak-${kind}-Q${reportQuarter}-${reportYear}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  };
 
   const loadAll = async () => {
     try {
@@ -68,6 +84,7 @@ export const LedgerPage: React.FC = () => {
             <button className={`tab ${tab === 'entries' ? 'active' : ''}`} onClick={() => setTab('entries')}>Journal Entries</button>
             <button className={`tab ${tab === 'trial'   ? 'active' : ''}`} onClick={() => setTab('trial')}>Trial Balance</button>
             <button className={`tab ${tab === 'lookup'  ? 'active' : ''}`} onClick={() => setTab('lookup')}>Bill Lookup</button>
+            <button className={`tab ${tab === 'reports' ? 'active' : ''}`} onClick={() => setTab('reports')}>Tax Reports</button>
           </div>
           <div className="card-header-actions">
             {tab === 'entries' && (
@@ -196,6 +213,36 @@ export const LedgerPage: React.FC = () => {
                 <div className="code-block">{JSON.stringify(billWorkflow, null, 2)}</div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Tax reports tab */}
+        {tab === 'reports' && (
+          <div className="card-body stack">
+            <div className="grid-3">
+              <div className="field-group">
+                <label className="field-label">Fiscal Year</label>
+                <input className="input" type="number" min={2000} max={2100} value={reportYear} onChange={e => setReportYear(Number(e.target.value) || new Date().getFullYear())} />
+              </div>
+              <div className="field-group">
+                <label className="field-label">Quarter</label>
+                <select className="select" value={reportQuarter} onChange={e => setReportQuarter(Number(e.target.value))}>
+                  <option value={1}>Q1 (Jan–Mar)</option>
+                  <option value={2}>Q2 (Apr–Jun)</option>
+                  <option value={3}>Q3 (Jul–Sep)</option>
+                  <option value={4}>Q4 (Oct–Dec)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="alert alert-info">
+              Exports TAK-oriented CSV templates for quarterly filing: Balance Sheet and Profit & Loss.
+            </div>
+
+            <div className="btn-group">
+              <button className="btn btn-primary" onClick={() => download('balance-sheet')}>Download Balance Sheet</button>
+              <button className="btn btn-primary" onClick={() => download('profit-loss')}>Download Profit &amp; Loss</button>
+            </div>
           </div>
         )}
       </div>
