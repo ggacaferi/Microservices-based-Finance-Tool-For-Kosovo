@@ -1,5 +1,6 @@
 import {
   IsArray,
+  IsBoolean,
   IsDateString,
   IsNotEmpty,
   IsNumber,
@@ -21,6 +22,14 @@ export class CreateBillLineDto {
   @IsString()
   @IsNotEmpty()
   taxCategoryId!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isInventoryItem?: boolean;
+
+  @IsOptional()
+  @IsString()
+  sku?: string;
 }
 
 export class CreateBillDto {

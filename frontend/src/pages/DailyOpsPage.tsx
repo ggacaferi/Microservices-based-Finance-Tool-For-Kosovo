@@ -1,18 +1,39 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { getLanguage } from '../language';
+import { useLanguage } from '../useLanguage';
 
 /* ─── Types ────────────────────────────────────────────── */
-interface BillLineForm   { description: string; quantity: number; unitPrice: number; taxCategoryId: string; accountCode: string; }
-interface InvoiceLineForm { description: string; quantity: number; unitPrice: number; accountCode: string; }
+interface BillLineForm   { description: string; quantity: string; unitPrice: string; taxCategoryId: string; accountCode: string; isInventoryItem?: boolean; sku?: string; }
+interface InvoiceLineForm { description: string; quantity: string; unitPrice: string; accountCode: string; isInventoryItem?: boolean; sku?: string; }
 interface BillResponse   { id: string; supplierId: string; issueDate: string; dueDate?: string | null; currency: string; status: string; totalNetAmount: number; lines: any[]; workflow?: any; }
-interface InvoiceResponse { id: string; customerId: string; issueDate: string; dueDate?: string | null; currency: string; status: string; totalNetAmount: number; lines: any[]; }
+interface InvoiceResponse { id: string; customerId: string; issueDate: string; dueDate?: string | null; currency: string; status: string; totalNetAmount: number; lines: any[]; receiverNui?: string | null; counterpartyEdiId?: string | null; }
 interface InventoryValuation { totalValue: number; items: any[]; movements: any[]; }
 interface ActivityEntry { id: string; type: string; entityId?: string; summary: string; at: string; }
 interface AccountItem { code: string; name: string; type: 'ASSET' | 'LIABILITY' | 'EQUITY' | 'REVENUE' | 'EXPENSE'; parentCode?: string; }
 interface TaxCategoryItem { id: string; name: string; rate: number; }
+interface EdiInboxItem {
+  id: string;
+  status: string;
+  senderBusinessId: string;
+  senderTenantId?: string;
+  messageId: string;
+  receivedAt: string;
+  importedBillId?: string | null;
+  payload?: {
+    issueDate?: string;
+    dueDate?: string | null;
+    currency?: string;
+    totalNetAmount?: number;
+    senderTenantName?: string | null;
+    lines?: Array<{ description: string; quantity: number; unitPrice: number }>;
+  };
+}
+type BillSortKey = 'issueDate' | 'supplierId' | 'totalNetAmount' | 'status';
+type InvoiceSortKey = 'issueDate' | 'customerId' | 'totalNetAmount' | 'status';
 
-const emptyBillLine: BillLineForm    = { description: '', quantity: 1, unitPrice: 0, taxCategoryId: '43', accountCode: '665-09' };
-const emptyInvLine: InvoiceLineForm  = { description: '', quantity: 1, unitPrice: 0, accountCode: '' };
+const emptyBillLine: BillLineForm    = { description: '', quantity: '1', unitPrice: '', taxCategoryId: '43', accountCode: '665-09', isInventoryItem: false, sku: '' };
+const emptyInvLine: InvoiceLineForm  = { description: '', quantity: '1', unitPrice: '', accountCode: '', isInventoryItem: false, sku: '' };
 
 const statusBadge = (s: string) => {
   if (s === 'POSTED' || s === 'SENT' || s === 'PAID') return 'badge-green';
@@ -23,7 +44,9 @@ const statusBadge = (s: string) => {
 
 /* ─── Component ────────────────────────────────────────── */
 export const DailyOpsPage: React.FC = () => {
-  const [tab, setTab] = useState<'bills' | 'invoices' | 'inventory' | 'storno' | 'activity'>('bills');
+  const lang = useLanguage();
+  const tr = (en: string, sq: string) => (lang === 'en' ? en : sq);
+  const [tab, setTab] = useState<'bills' | 'invoices' | 'inventory' | 'storno'>('bills');
 
   /* Bills */
   const [supplierId, setSupplierId]   = useState('SUP-1');
@@ -35,6 +58,7 @@ export const DailyOpsPage: React.FC = () => {
 
   /* Invoices */
   const [customerId,    setCustomerId]    = useState('CUS-1');
+  const [receiverNui,   setReceiverNui]   = useState('');
   const [invLines,      setInvLines]      = useState<InvoiceLineForm[]>([emptyInvLine]);
   const [activeInvoice, setActiveInvoice] = useState<InvoiceResponse | null>(null);
   const [invLookup,     setInvLookup]     = useState('');
@@ -59,6 +83,18 @@ export const DailyOpsPage: React.FC = () => {
   const [loading,      setLoading]     = useState(false);
   const [error,        setError]       = useState<string | null>(null);
   const [success,      setSuccess]     = useState<string | null>(null);
+  const [ediInbox, setEdiInbox] = useState<EdiInboxItem[]>([]);
+  const [selectedEdiId, setSelectedEdiId] = useState<string | null>(null);
+  const [bills, setBills] = useState<BillResponse[]>([]);
+  const [billStatusFilter, setBillStatusFilter] = useState<'ALL' | 'DRAFT' | 'POSTED' | 'PAID' | 'REVERTED'>('ALL');
+  const [billSortKey, setBillSortKey] = useState<BillSortKey>('issueDate');
+  const [billSortDir, setBillSortDir] = useState<'asc' | 'desc'>('desc');
+  const [showCreateBillModal, setShowCreateBillModal] = useState(false);
+  const [invoices, setInvoices] = useState<InvoiceResponse[]>([]);
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<'ALL' | 'DRAFT' | 'SENT' | 'PAID' | 'REVERTED'>('ALL');
+  const [invoiceSortKey, setInvoiceSortKey] = useState<InvoiceSortKey>('issueDate');
+  const [invoiceSortDir, setInvoiceSortDir] = useState<'asc' | 'desc'>('desc');
+  const [showCreateInvoiceModal, setShowCreateInvoiceModal] = useState(false);
 
   const api = axios.create({ baseURL: '/api/v1' });
   api.interceptors.request.use((config) => {
@@ -69,6 +105,7 @@ export const DailyOpsPage: React.FC = () => {
     config.headers = config.headers || {};
     if (token) (config.headers as any).Authorization = `Bearer ${token}`;
     if (tenantId) (config.headers as any)['x-tenant-id'] = tenantId;
+    (config.headers as any)['x-lang'] = getLanguage();
     return config;
   });
 
@@ -89,20 +126,31 @@ export const DailyOpsPage: React.FC = () => {
   };
 
   /* ── Bill handlers ──────────────────────────── */
-  const editBillLine = (i: number, f: keyof BillLineForm, v: string) =>
-    setBillLines(p => p.map((l, j) => j !== i ? l : { ...l, [f]: f === 'description' || f === 'taxCategoryId' || f === 'accountCode' ? v : Number(v) }));
+  const editBillLine = (i: number, f: keyof BillLineForm, v: any) =>
+    setBillLines(p => p.map((l, j) => j !== i ? l : { ...l, [f]: f === 'isInventoryItem' ? Boolean(v) : v }));
 
   const createBill = () => wrap(async () => {
-    const res = await api.post<BillResponse>('/bills/', { supplierId, issueDate, currency, lineItems: billLines });
-    const posted = await api.post<BillResponse>(`/bills/${res.data.id}/post`);
-    setActiveBill(posted.data); setBillLookup(posted.data.id); setStornoEntityId(posted.data.id);
-    await loadActivities(); msg('success', `Bill created and posted: ${posted.data.id}`);
+    const normalizedLines = billLines.map((l) => ({
+      ...l,
+      quantity: Number(l.quantity),
+      unitPrice: Number(l.unitPrice),
+    }));
+    if (normalizedLines.some(l => !Number.isFinite(l.quantity) || l.quantity <= 0 || !Number.isFinite(l.unitPrice) || l.unitPrice < 0)) {
+      msg('error', 'Please enter valid numeric values for quantity and unit price.');
+      return;
+    }
+    const res = await api.post<BillResponse>('/bills/', { supplierId, issueDate, currency, lineItems: normalizedLines });
+    setActiveBill(res.data); setBillLookup(res.data.id); setStornoEntityId(res.data.id);
+    await loadBills();
+    setShowCreateBillModal(false);
+    setBillLines([emptyBillLine]);
+    msg('success', `Bill created: ${res.data.id}`);
   });
 
   const postBill = () => wrap(async () => {
     if (!activeBill) return;
     const res = await api.post<BillResponse>(`/bills/${activeBill.id}/post`);
-    setActiveBill(res.data); await loadActivities(); msg('success', 'Bill posted — journal entry created in Ledger');
+    setActiveBill(res.data); await loadBills(); msg('success', 'Bill posted — journal entry created in Ledger');
   });
 
   const fetchBill = () => wrap(async () => {
@@ -110,33 +158,70 @@ export const DailyOpsPage: React.FC = () => {
     setActiveBill(res.data); setStornoEntityId(res.data.id);
   });
 
+  const loadBills = async () => {
+    const params = billStatusFilter === 'ALL' ? undefined : { status: billStatusFilter };
+    const res = await api.get<BillResponse[]>('/bills/', { params });
+    setBills(res.data || []);
+  };
+
+  const payBill = (id: string) => wrap(async () => {
+    const res = await api.post<BillResponse>(`/bills/${id}/pay`);
+    if (activeBill?.id === id) setActiveBill(res.data);
+    await loadBills();
+    msg('success', `Bill marked as paid: ${id}`);
+  });
+
   /* ── Invoice handlers ───────────────────────── */
-  const editInvLine = (i: number, f: keyof InvoiceLineForm, v: string) =>
-    setInvLines(p => p.map((l, j) => j !== i ? l : { ...l, [f]: f === 'description' || f === 'accountCode' ? v : Number(v) }));
+  const editInvLine = (i: number, f: keyof InvoiceLineForm, v: any) =>
+    setInvLines(p => p.map((l, j) => j !== i ? l : { ...l, [f]: f === 'isInventoryItem' ? Boolean(v) : v }));
 
   const createInvoice = () => wrap(async () => {
-    const res = await api.post<InvoiceResponse>('/invoices/', { customerId, issueDate, currency, lines: invLines });
-    const sent = await api.post<InvoiceResponse>(`/invoices/${res.data.id}/send`);
-    setActiveInvoice(sent.data); setInvLookup(sent.data.id); setStornoEntityId(sent.data.id);
-    await loadActivities(); msg('success', `Invoice created and sent: ${sent.data.id}`);
+    const normalizedLines = invLines.map((l) => ({
+      ...l,
+      quantity: Number(l.quantity),
+      unitPrice: Number(l.unitPrice),
+    }));
+    if (normalizedLines.some(l => !Number.isFinite(l.quantity) || l.quantity <= 0 || !Number.isFinite(l.unitPrice) || l.unitPrice < 0)) {
+      msg('error', 'Please enter valid numeric values for quantity and unit price.');
+      return;
+    }
+    const res = await api.post<InvoiceResponse>('/invoices/', { customerId, receiverNui: receiverNui || undefined, issueDate, currency, lines: normalizedLines });
+    setActiveInvoice(res.data); setInvLookup(res.data.id); setStornoEntityId(res.data.id);
+    await loadInvoices();
+    setShowCreateInvoiceModal(false);
+    setInvLines([emptyInvLine]);
+    msg('success', `Invoice created: ${res.data.id}`);
   });
 
-  const sendInvoice = () => wrap(async () => {
-    if (!activeInvoice) return;
-    const res = await api.post<InvoiceResponse>(`/invoices/${activeInvoice.id}/send`);
-    setActiveInvoice(res.data); await loadActivities(); msg('success', 'Invoice sent');
+  const sendInvoice = (id: string) => wrap(async () => {
+    const res = await api.post<InvoiceResponse>(`/invoices/${id}/send`);
+    if (activeInvoice?.id === id) setActiveInvoice(res.data);
+    await loadInvoices();
+    if (res.data.counterpartyEdiId) {
+      await loadEdiInbox();
+      msg('success', tr('Invoice sent. The receiver will see it under Incoming EDI Documents — they click "Accept to Bills" to import it.', 'Fatura u dërgua. Marrësi e sheh te Dokumentet EDI në hyrje dhe klikon "Prano te Faturat" për ta importuar.'));
+    } else {
+      msg('success', tr('Invoice sent.', 'Fatura u dërgua.'));
+    }
   });
 
-  const payInvoice = () => wrap(async () => {
-    if (!activeInvoice) return;
-    const res = await api.post<InvoiceResponse>(`/invoices/${activeInvoice.id}/pay`);
-    setActiveInvoice(res.data); await loadActivities(); msg('success', 'Invoice marked as paid');
+  const payInvoice = (id: string) => wrap(async () => {
+    const res = await api.post<InvoiceResponse>(`/invoices/${id}/pay`);
+    if (activeInvoice?.id === id) setActiveInvoice(res.data);
+    await loadInvoices();
+    msg('success', 'Invoice marked as paid');
   });
 
   const fetchInvoice = () => wrap(async () => {
     const res = await api.get<InvoiceResponse>(`/invoices/${invLookup}`);
     setActiveInvoice(res.data); setStornoEntityId(res.data.id);
   });
+
+  const loadInvoices = async () => {
+    const res = await api.get<InvoiceResponse[]>('/invoices/');
+    const all = res.data || [];
+    setInvoices(invoiceStatusFilter === 'ALL' ? all : all.filter(i => i.status === invoiceStatusFilter));
+  };
 
   /* ── Inventory handlers ─────────────────────── */
   const recordMovement = () => wrap(async () => {
@@ -173,17 +258,91 @@ export const DailyOpsPage: React.FC = () => {
     const res = await api.get<TaxCategoryItem[]>('/compliance/tax-categories');
     setTaxCategories(res.data || []);
   };
+  const loadEdiInbox = async () => {
+    try {
+      const res = await api.get<EdiInboxItem[]>('/edi/inbox');
+      const docs = res.data || [];
+      setEdiInbox(docs);
+      setSelectedEdiId((prev) => {
+        if (docs.length === 0) return null;
+        if (prev && docs.some((d) => d.id === prev)) return prev;
+        return docs[0].id;
+      });
+    } catch (e: any) {
+      const m = e?.response?.data?.message;
+      msg('error', Array.isArray(m) ? m.join(', ') : m ?? e.message ?? 'Failed to load EDI inbox');
+    }
+  };
+  const acceptEdiToBills = (inboxId: string) => wrap(async () => {
+    await api.post(`/edi/inbox/${inboxId}/import-to-bill`);
+    await loadEdiInbox();
+    await loadBills();
+    msg('success', `Imported from inbox: ${inboxId}`);
+  });
 
   useEffect(() => {
-    loadActivities().catch(() => {});
     loadValuation().catch(() => {});
     loadAccounts().catch(() => {});
     loadTaxCategories().catch(() => {});
+    loadEdiInbox();
+    loadBills().catch(() => {});
+    loadInvoices().catch(() => {});
   }, []);
+
+  useEffect(() => {
+    loadBills().catch(() => {});
+  }, [billStatusFilter]);
+
+  useEffect(() => {
+    loadInvoices().catch(() => {});
+  }, [invoiceStatusFilter]);
+
+  useEffect(() => {
+    loadAccounts().catch(() => {});
+    loadTaxCategories().catch(() => {});
+    loadEdiInbox();
+  }, [lang]);
 
   const parentCodes = new Set(accounts.map(a => a.parentCode).filter(Boolean) as string[]);
   const leafAccounts = accounts.filter(a => !parentCodes.has(a.code));
   const expenseLeafAccounts = leafAccounts.filter(a => a.type === 'EXPENSE');
+  const selectedEdi = ediInbox.find(d => d.id === selectedEdiId) || null;
+
+  const ediSenderLabel = (d: EdiInboxItem) => {
+    const name = d.payload?.senderTenantName?.trim();
+    const nui = d.senderBusinessId;
+    if (name && nui && nui !== 'UNKNOWN') return `${name} · NUI ${nui}`;
+    if (name) return name;
+    if (nui && nui !== 'UNKNOWN') return `NUI ${nui}`;
+    return tr('Unknown sender', 'Dërgues i panjohur');
+  };
+  const ediLinesSummary = (d: EdiInboxItem) => {
+    const lines = d.payload?.lines;
+    if (!lines?.length) return '—';
+    const s = lines.map((l) => `${l.description} (×${l.quantity})`).join(' · ');
+    return s.length > 140 ? `${s.slice(0, 137)}…` : s;
+  };
+  const ediFormatTotal = (d: EdiInboxItem) => {
+    const amt = d.payload?.totalNetAmount;
+    const cur = d.payload?.currency || 'EUR';
+    if (amt == null || Number.isNaN(Number(amt))) return '—';
+    const sym = cur === 'EUR' ? '€' : `${cur} `;
+    return `${sym}${Number(amt).toFixed(2)}`;
+  };
+  const sortedBills = [...bills].sort((a, b) => {
+    const dir = billSortDir === 'asc' ? 1 : -1;
+    if (billSortKey === 'issueDate') return (a.issueDate > b.issueDate ? 1 : -1) * dir;
+    if (billSortKey === 'supplierId') return a.supplierId.localeCompare(b.supplierId) * dir;
+    if (billSortKey === 'status') return a.status.localeCompare(b.status) * dir;
+    return ((a.totalNetAmount || 0) - (b.totalNetAmount || 0)) * dir;
+  });
+  const sortedInvoices = [...invoices].sort((a, b) => {
+    const dir = invoiceSortDir === 'asc' ? 1 : -1;
+    if (invoiceSortKey === 'issueDate') return (a.issueDate > b.issueDate ? 1 : -1) * dir;
+    if (invoiceSortKey === 'customerId') return a.customerId.localeCompare(b.customerId) * dir;
+    if (invoiceSortKey === 'status') return a.status.localeCompare(b.status) * dir;
+    return ((a.totalNetAmount || 0) - (b.totalNetAmount || 0)) * dir;
+  });
 
   /* ── Render ─────────────────────────────────── */
   return (
@@ -194,253 +353,210 @@ export const DailyOpsPage: React.FC = () => {
 
       {/* Tabs */}
       <div className="tabs">
-        {(['bills', 'invoices', 'inventory', 'storno', 'activity'] as const).map(t => (
+        {(['bills', 'invoices', 'inventory', 'storno'] as const).map(t => (
           <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
-            {{ bills: '🧾 Bills', invoices: '📄 Invoices', inventory: '📦 Inventory', storno: '↩ Storno', activity: '🕐 Activity' }[t]}
+            {{ bills: tr('Bills', 'Faturat Hyrëse'), invoices: tr('Invoices', 'Faturat Dalëse'), inventory: tr('Inventory', 'Inventari'), storno: 'Storno' }[t]}
           </button>
         ))}
       </div>
 
       {/* ── Bills tab ──────────────────────────── */}
       {tab === 'bills' && (
-        <div className="grid-2">
-          {/* Create bill */}
+        <div className="stack-lg">
           <div className="card">
             <div className="card-header">
               <div>
-                <div className="card-title">New Supplier Bill</div>
-                <div className="card-subtitle">Fatura Hyrëse — Accounts Payable</div>
+                <div className="card-title">Bills Register</div>
+                <div className="card-subtitle">{tr('View, sort, post and mark bills as paid', 'Shiko, rendit, posto dhe shëno faturat si të paguara')}</div>
+              </div>
+              <div className="btn-group">
+                <button className="btn btn-primary btn-sm" onClick={() => setShowCreateBillModal(true)}>{tr('Add New Bill', 'Shto Faturë të Re')}</button>
+                <select className="select" style={{ width: 140, height: 28 }} value={billStatusFilter} onChange={e => setBillStatusFilter(e.target.value as any)}>
+                  <option value="ALL">{tr('All statuses', 'Të gjitha statuset')}</option><option value="DRAFT">DRAFT</option><option value="POSTED">POSTED</option><option value="PAID">PAID</option><option value="REVERTED">REVERTED</option>
+                </select>
+                <select className="select" style={{ width: 160, height: 28 }} value={billSortKey} onChange={e => setBillSortKey(e.target.value as BillSortKey)}>
+                  <option value="issueDate">{tr('Date', 'Data')}</option><option value="supplierId">{tr('Supplier', 'Furnitori')}</option><option value="totalNetAmount">{tr('Amount', 'Shuma')}</option><option value="status">Status</option>
+                </select>
+                <button className="btn btn-secondary btn-sm" onClick={() => setBillSortDir(d => d === 'asc' ? 'desc' : 'asc')}>{billSortDir === 'asc' ? '↑' : '↓'}</button>
               </div>
             </div>
-            <div className="card-body form-section">
-              <div className="field-row">
-                <div className="field-group" style={{ flex: 1 }}>
-                  <label className="field-label">Supplier ID</label>
-                  <input className="input" value={supplierId} onChange={e => setSupplierId(e.target.value)} />
-                </div>
-                <div className="field-group">
-                  <label className="field-label">Issue Date</label>
-                  <input className="input" type="date" value={issueDate} onChange={e => setIssueDate(e.target.value)} />
-                </div>
-                <div className="field-group" style={{ width: 100 }}>
-                  <label className="field-label">Currency</label>
-                  <select className="select" value={currency} onChange={e => setCurrency(e.target.value)}>
-                    <option value="EUR">EUR</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <div className="field-label mb-2">Line Items</div>
-                <table className="lines-table">
-                  <thead>
-                    <tr>
-                      <th>Description</th>
-                      <th style={{ width: 90 }}>Qty</th>
-                      <th style={{ width: 110 }}>Unit Price</th>
-                      <th style={{ width: 160 }}>VAT Category</th>
-                      <th style={{ width: 220 }}>Llogaria (nen-kategori)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {billLines.map((l, i) => (
-                      <tr key={i}>
-                        <td><input className="input" placeholder="Item description" value={l.description} onChange={e => editBillLine(i, 'description', e.target.value)} /></td>
-                        <td><input className="input" type="number" value={l.quantity}  onChange={e => editBillLine(i, 'quantity',  e.target.value)} /></td>
-                        <td><input className="input" type="number" value={l.unitPrice} onChange={e => editBillLine(i, 'unitPrice', e.target.value)} /></td>
-                        <td>
-                          <select className="select" value={l.taxCategoryId} onChange={e => editBillLine(i, 'taxCategoryId', e.target.value)}>
-                            {taxCategories.map(tc => (
-                              <option key={tc.id} value={tc.id}>{tc.name} ({(tc.rate * 100).toFixed(0)}%)</option>
-                            ))}
-                          </select>
-                        </td>
-                        <td>
-                          <select className="select" value={l.accountCode} onChange={e => editBillLine(i, 'accountCode', e.target.value)}>
-                            {expenseLeafAccounts.map(a => (
-                              <option key={a.code} value={a.code}>{a.code} · {a.name}</option>
-                            ))}
-                          </select>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <button className="btn btn-secondary btn-sm mt-3" onClick={() => setBillLines(p => [...p, emptyBillLine])}>+ Add Line</button>
-              </div>
-
-              <div className="btn-group">
-                <button className="btn btn-primary" onClick={createBill} disabled={loading}>
-                  {loading ? 'Working…' : 'Create Draft Bill'}
-                </button>
-              </div>
+            <div className="card-body" style={{ paddingTop: 10 }}>
+              <table className="erp-table"><thead><tr><th>ID</th><th>Supplier</th><th>Date</th><th>Status</th><th className="text-right">Amount</th><th></th></tr></thead><tbody>
+                {sortedBills.slice(0, 100).map((b) => (
+                  <tr key={b.id}>
+                    <td className="text-mono">{b.id.slice(0, 8)}…</td><td>{b.supplierId}</td><td>{b.issueDate?.slice(0,10)}</td>
+                    <td><span className={`badge ${statusBadge(b.status)}`}>{b.status}</span></td>
+                    <td className="col-amount">€{(b.totalNetAmount || 0).toFixed(2)}</td>
+                    <td className="text-right"><div className="btn-group" style={{ justifyContent: 'flex-end' }}>
+                      <button className="btn btn-primary btn-sm" disabled={b.status !== 'DRAFT'} onClick={() => wrap(async () => { await api.post(`/bills/${b.id}/post`); await loadBills(); })}>{tr('Post', 'Posto')}</button>
+                      <button className="btn btn-success btn-sm" disabled={b.status !== 'POSTED'} onClick={() => payBill(b.id)}>{tr('Mark Paid', 'Shëno si të Paguar')}</button>
+                    </div></td>
+                  </tr>
+                ))}
+                {sortedBills.length === 0 && <tr><td colSpan={6} className="muted">{tr('No bills found', 'Nuk u gjetën fatura')}</td></tr>}
+              </tbody></table>
             </div>
           </div>
 
-          {/* Bill lifecycle */}
           <div className="card">
             <div className="card-header">
-              <div>
-                <div className="card-title">Bill Lifecycle</div>
-                <div className="card-subtitle">Load, post, and inspect a bill's accounting impact</div>
-              </div>
+              <div><div className="card-title">{tr('Incoming EDI Documents', 'Dokumente EDI në hyrje')}</div><div className="card-subtitle">{tr('Accept supplier invoices and convert them to bills', 'Prano faturat hyrëse dhe konvertoji në fatura blerëse')}</div></div>
+              <button className="btn btn-secondary btn-sm" onClick={() => loadEdiInbox()}>{tr('Refresh', 'Rifresko')}</button>
             </div>
-            <div className="card-body form-section">
-              <div className="field-row">
-                <div className="field-group" style={{ flex: 1 }}>
-                  <label className="field-label">Bill ID</label>
-                  <input className="input" placeholder="Paste UUID…" value={billLookup} onChange={e => setBillLookup(e.target.value)} />
-                </div>
-                <button className="btn btn-secondary" style={{ alignSelf: 'flex-end' }} onClick={fetchBill} disabled={loading}>Load</button>
-                <button className="btn btn-primary"   style={{ alignSelf: 'flex-end' }} onClick={postBill}  disabled={loading || !activeBill || activeBill.status !== 'DRAFT'}>Post</button>
-              </div>
-
-              {activeBill ? (
-                <div className="stack">
-                  <div className="flex gap-2">
-                    <span className={`badge ${statusBadge(activeBill.status)}`}>{activeBill.status}</span>
-                    <span className="badge badge-slate">€{(activeBill.totalNetAmount ?? 0).toFixed(2)} {activeBill.currency}</span>
-                    <span className="badge badge-blue">Supplier: {activeBill.supplierId}</span>
-                  </div>
-
-                  <table className="erp-table">
-                    <thead><tr><th>Description</th><th>Llogaria</th><th className="text-right">Qty</th><th className="text-right">Unit Price</th><th className="text-right">Net</th></tr></thead>
-                    <tbody>
-                      {activeBill.lines?.map((l: any, i: number) => (
-                        <tr key={i}>
-                          <td>{l.description}</td>
-                          <td className="text-mono">{l.accountCode ?? '—'}</td>
-                          <td className="col-amount">{l.quantity}</td>
-                          <td className="col-amount">€{l.unitPrice?.toFixed(2)}</td>
-                          <td className="col-amount">€{(l.quantity * l.unitPrice)?.toFixed(2)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-
-                  {activeBill.workflow && (
-                    <div className="alert alert-info">
-                      <div>
-                        <div style={{ fontWeight: 600, marginBottom: 4 }}>Storno Workflow</div>
-                        <div>Event: <strong>{activeBill.workflow.event?.type}</strong></div>
-                        <div>Ledger entries: {activeBill.workflow.ledger?.journalEntries?.length ?? 0}</div>
-                        <div>AI snapshot expenses: €{activeBill.workflow.aiSnapshot?.totalExpenses?.toFixed(2) ?? '0.00'}</div>
-                      </div>
+            <div className="card-body">
+              {ediInbox.length === 0 ? <div className="empty-state" style={{ padding: 14 }}><div className="empty-state-icon">ED</div><div className="empty-state-text">{tr('No incoming EDI documents', 'Nuk ka dokumente EDI në hyrje')}</div></div> : (
+                <table className="erp-table"><thead><tr><th>{tr('Received', 'Pranuar')}</th><th>{tr('Sender', 'Dërguesi')}</th><th>{tr('Amount', 'Shuma')}</th><th>{tr('Description', 'Përshkrimi')}</th></tr></thead><tbody>
+                  {ediInbox.map((d) => (
+                    <tr key={d.id} onClick={() => setSelectedEdiId(d.id)} style={{ cursor: 'pointer', background: selectedEdiId === d.id ? 'var(--blue-bg)' : undefined }}>
+                      <td style={{ whiteSpace: 'nowrap' }}>{new Date(d.receivedAt).toLocaleString()}</td>
+                      <td style={{ maxWidth: 220 }}><div style={{ fontWeight: 600 }}>{ediSenderLabel(d)}</div></td>
+                      <td className="col-amount" style={{ fontWeight: 600 }}>{ediFormatTotal(d)}</td>
+                      <td className="muted" style={{ maxWidth: 360 }}>{ediLinesSummary(d)}</td>
+                    </tr>
+                  ))}
+                </tbody></table>
+              )}
+              {selectedEdi && (
+                <div className="card" style={{ marginTop: 12 }}>
+                  <div className="card-header">
+                    <div>
+                      <div className="card-title">{tr('Review before accepting', 'Rishiko para se të pranosh')}</div>
+                      <div className="card-subtitle">{tr('This will create a draft bill in your register.', 'Kjo krijon një faturë hyrëse (DRAFT) në regjistrin tuaj.')}</div>
                     </div>
-                  )}
-                </div>
-              ) : (
-                <div className="empty-state" style={{ padding: 20 }}>
-                  <div className="empty-state-icon">🧾</div>
-                  <div className="empty-state-text">No bill loaded</div>
-                  <div className="empty-state-sub">Create a bill or paste an ID above</div>
+                    <button className="btn btn-primary btn-sm" onClick={() => acceptEdiToBills(selectedEdi.id)}>{tr('Accept to Bills', 'Prano te Faturat')}</button>
+                  </div>
+                  <div className="card-body" style={{ paddingTop: 0 }}>
+                    <div className="grid-2" style={{ marginBottom: 12 }}>
+                      <div><div className="field-label">{tr('Sender', 'Dërguesi')}</div><div style={{ fontWeight: 600 }}>{ediSenderLabel(selectedEdi)}</div></div>
+                      <div><div className="field-label">{tr('Total (net)', 'Totali (neto)')}</div><div style={{ fontWeight: 600, fontSize: '1.05rem' }}>{ediFormatTotal(selectedEdi)}</div></div>
+                      <div><div className="field-label">{tr('Issue date', 'Data e lëshimit')}</div><div>{selectedEdi.payload?.issueDate ?? '—'}</div></div>
+                      <div><div className="field-label">{tr('Due date', 'Data e pagesës')}</div><div>{selectedEdi.payload?.dueDate || '—'}</div></div>
+                      <div><div className="field-label">{tr('Invoice ref.', 'Ref. faturës')}</div><div className="text-mono" style={{ fontSize: 12 }}>{selectedEdi.messageId}</div></div>
+                    </div>
+                    <div className="field-label mb-2">{tr('Line items', 'Rreshtat')}</div>
+                    <table className="erp-table" style={{ fontSize: 13 }}>
+                      <thead><tr><th>{tr('Description', 'Përshkrimi')}</th><th style={{ width: 70 }}>{tr('Qty', 'Sasia')}</th><th style={{ width: 100 }}>{tr('Unit', 'Njësi')}</th><th style={{ width: 100 }}>{tr('Line total', 'Total rreshti')}</th></tr></thead>
+                      <tbody>
+                        {(selectedEdi.payload?.lines || []).map((l, idx) => (
+                          <tr key={idx}>
+                            <td>{l.description}</td>
+                            <td>{l.quantity}</td>
+                            <td>{Number(l.unitPrice).toFixed(2)}</td>
+                            <td className="col-amount">{(l.quantity * l.unitPrice).toFixed(2)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </div>
           </div>
+
+          {showCreateBillModal && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000 }}>
+              <div className="card" style={{ width: 'min(980px, 92vw)', maxHeight: '88vh', overflow: 'auto' }}>
+                <div className="card-header"><div><div className="card-title">{tr('New Bill', 'Faturë e Re')}</div></div><button className="btn btn-secondary btn-sm" onClick={() => setShowCreateBillModal(false)}>{tr('Close', 'Mbyll')}</button></div>
+                <div className="card-body form-section">
+                  <div className="field-row"><div className="field-group" style={{ flex: 1 }}><label className="field-label">{tr('Supplier ID', 'ID e Furnitorit')}</label><input className="input" value={supplierId} onChange={e => setSupplierId(e.target.value)} /></div><div className="field-group"><label className="field-label">{tr('Issue Date', 'Data e Lëshimit')}</label><input className="input" type="date" value={issueDate} onChange={e => setIssueDate(e.target.value)} /></div><div className="field-group" style={{ width: 100 }}><label className="field-label">{tr('Currency', 'Valuta')}</label><select className="select" value={currency} onChange={e => setCurrency(e.target.value)}><option value="EUR">EUR</option></select></div></div>
+                  <div>
+                    <div className="field-label mb-2">{tr('Line Items', 'Rreshtat')}</div>
+                    <table className="lines-table">
+                      <thead>
+                        <tr>
+                          <th>{tr('Description', 'Përshkrimi')}</th>
+                          <th style={{ width: 90 }}>{tr('Qty', 'Sasia')}</th>
+                          <th style={{ width: 110 }}>{tr('Unit Price', 'Çmimi/Njësi')}</th>
+                          <th style={{ width: 160 }}>{tr('VAT Category', 'Kategoria TVSH')}</th>
+                          <th style={{ width: 220 }}>{tr('Account', 'Llogaria')}</th>
+                          <th style={{ width: 90 }}>{tr('Stock?', 'Stok?')}</th>
+                          <th style={{ width: 140 }}>SKU</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {billLines.map((l, i) => (
+                          <tr key={i}>
+                            <td><input className="input" value={l.description} onChange={e => editBillLine(i, 'description', e.target.value)} /></td>
+                            <td><input className="input" type="text" inputMode="decimal" value={l.quantity} onChange={e => editBillLine(i, 'quantity', e.target.value)} /></td>
+                            <td><input className="input" type="text" inputMode="decimal" value={l.unitPrice} onChange={e => editBillLine(i, 'unitPrice', e.target.value)} /></td>
+                            <td><select className="select" value={l.taxCategoryId} onChange={e => editBillLine(i, 'taxCategoryId', e.target.value)}>{taxCategories.map(tc => <option key={tc.id} value={tc.id}>{tc.name}</option>)}</select></td>
+                            <td><select className="select" value={l.accountCode} onChange={e => editBillLine(i, 'accountCode', e.target.value)}>{expenseLeafAccounts.map(a => <option key={a.code} value={a.code}>{a.code} · {a.name}</option>)}</select></td>
+                            <td><input type="checkbox" checked={Boolean(l.isInventoryItem)} onChange={e => editBillLine(i, 'isInventoryItem', e.target.checked)} /></td>
+                            <td><input className="input" placeholder="SKU-001" value={l.sku || ''} onChange={e => editBillLine(i, 'sku', e.target.value.toUpperCase())} disabled={!l.isInventoryItem} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <button className="btn btn-secondary btn-sm mt-3" onClick={() => setBillLines(p => [...p, emptyBillLine])}>{tr('+ Add Line', '+ Shto Rresht')}</button>
+                  </div>
+                  <div className="btn-group" style={{ justifyContent: 'flex-end' }}><button className="btn btn-secondary" onClick={() => setShowCreateBillModal(false)}>{tr('Close', 'Mbyll')}</button><button className="btn btn-primary" onClick={createBill} disabled={loading}>{tr('Create Draft Bill', 'Krijo Faturë Draft')}</button></div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
       {/* ── Invoices tab ───────────────────────── */}
       {tab === 'invoices' && (
-        <div className="grid-2">
+        <div className="stack-lg">
           <div className="card">
             <div className="card-header">
-              <div>
-                <div className="card-title">New Customer Invoice</div>
-                <div className="card-subtitle">Fatura Dalëse — Accounts Receivable</div>
-              </div>
-            </div>
-            <div className="card-body form-section">
-              <div className="field-row">
-                <div className="field-group" style={{ flex: 1 }}>
-                  <label className="field-label">Customer ID</label>
-                  <input className="input" value={customerId} onChange={e => setCustomerId(e.target.value)} />
-                </div>
-                <div className="field-group">
-                  <label className="field-label">Issue Date</label>
-                  <input className="input" type="date" value={issueDate} onChange={e => setIssueDate(e.target.value)} />
-                </div>
-              </div>
-
-              <div>
-                <div className="field-label mb-2">Line Items</div>
-                <table className="lines-table">
-                  <thead>
-                    <tr>
-                      <th>Description</th>
-                      <th style={{ width: 90 }}>Qty</th>
-                      <th style={{ width: 110 }}>Unit Price</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {invLines.map((l, i) => (
-                      <tr key={i}>
-                        <td><input className="input" placeholder="Service description" value={l.description} onChange={e => editInvLine(i, 'description', e.target.value)} /></td>
-                        <td><input className="input" type="number" value={l.quantity}  onChange={e => editInvLine(i, 'quantity',  e.target.value)} /></td>
-                        <td><input className="input" type="number" value={l.unitPrice} onChange={e => editInvLine(i, 'unitPrice', e.target.value)} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <button className="btn btn-secondary btn-sm mt-3" onClick={() => setInvLines(p => [...p, emptyInvLine])}>+ Add Line</button>
-              </div>
-
+              <div><div className="card-title">{tr('Invoices Register', 'Regjistri i Invoice-ve')}</div><div className="card-subtitle">{tr('View, sort, send and mark invoices as paid', 'Shiko, rendit, dërgo dhe shëno invoice-t si të paguara')}</div></div>
               <div className="btn-group">
-                <button className="btn btn-primary" onClick={createInvoice} disabled={loading}>Create Invoice</button>
+                <button className="btn btn-primary btn-sm" onClick={() => setShowCreateInvoiceModal(true)}>{tr('Add New Invoice', 'Shto Invoice të Ri')}</button>
+                <select className="select" style={{ width: 140, height: 28 }} value={invoiceStatusFilter} onChange={e => setInvoiceStatusFilter(e.target.value as any)}><option value="ALL">{tr('All statuses', 'Të gjitha statuset')}</option><option value="DRAFT">DRAFT</option><option value="SENT">SENT</option><option value="PAID">PAID</option><option value="REVERTED">REVERTED</option></select>
+                <select className="select" style={{ width: 160, height: 28 }} value={invoiceSortKey} onChange={e => setInvoiceSortKey(e.target.value as InvoiceSortKey)}><option value="issueDate">{tr('Date', 'Data')}</option><option value="customerId">{tr('Customer', 'Klienti')}</option><option value="totalNetAmount">{tr('Amount', 'Shuma')}</option><option value="status">Status</option></select>
+                <button className="btn btn-secondary btn-sm" onClick={() => setInvoiceSortDir(d => d === 'asc' ? 'desc' : 'asc')}>{invoiceSortDir === 'asc' ? '↑' : '↓'}</button>
               </div>
+            </div>
+            <div className="card-body" style={{ paddingTop: 10 }}>
+              <table className="erp-table"><thead><tr><th>ID</th><th>Customer</th><th>Date</th><th>Status</th><th className="text-right">Amount</th><th></th></tr></thead><tbody>
+                {sortedInvoices.slice(0, 100).map((i) => (
+                  <tr key={i.id}><td className="text-mono">{i.id.slice(0,8)}…</td><td>{i.customerId}</td><td>{i.issueDate?.slice(0,10)}</td><td><span className={`badge ${statusBadge(i.status)}`}>{i.status}</span></td><td className="col-amount">€{(i.totalNetAmount || 0).toFixed(2)}</td><td className="text-right"><div className="btn-group" style={{ justifyContent: 'flex-end' }}><button className="btn btn-secondary btn-sm" disabled={i.status !== 'DRAFT'} onClick={() => sendInvoice(i.id)}>{tr('Send', 'Dërgo')}</button><button className="btn btn-success btn-sm" disabled={i.status !== 'SENT'} onClick={() => payInvoice(i.id)}>{tr('Mark Paid', 'Shëno si të Paguar')}</button></div></td></tr>
+                ))}
+                {sortedInvoices.length === 0 && <tr><td colSpan={6} className="muted">{tr('No invoices found', 'Nuk u gjetën invoice')}</td></tr>}
+              </tbody></table>
             </div>
           </div>
 
-          <div className="card">
-            <div className="card-header">
-              <div>
-                <div className="card-title">Invoice Lifecycle</div>
-                <div className="card-subtitle">Draft → Sent → Paid</div>
-              </div>
-            </div>
-            <div className="card-body form-section">
-              <div className="field-row">
-                <div className="field-group" style={{ flex: 1 }}>
-                  <label className="field-label">Invoice ID</label>
-                  <input className="input" placeholder="Paste UUID…" value={invLookup} onChange={e => setInvLookup(e.target.value)} />
-                </div>
-                <button className="btn btn-secondary" style={{ alignSelf: 'flex-end' }} onClick={fetchInvoice} disabled={loading}>Load</button>
-              </div>
-
-              {activeInvoice ? (
-                <div className="stack">
-                  <div className="flex gap-2">
-                    <span className={`badge ${statusBadge(activeInvoice.status)}`}>{activeInvoice.status}</span>
-                    <span className="badge badge-slate">€{(activeInvoice.totalNetAmount ?? 0).toFixed(2)} {activeInvoice.currency}</span>
-                  </div>
-
-                  <table className="erp-table">
-                    <thead><tr><th>Description</th><th className="text-right">Qty</th><th className="text-right">Net</th></tr></thead>
-                    <tbody>
-                      {activeInvoice.lines?.map((l: any, i: number) => (
-                        <tr key={i}>
-                          <td>{l.description}</td>
-                          <td className="col-amount">{l.quantity}</td>
-                          <td className="col-amount">€{(l.quantity * l.unitPrice)?.toFixed(2)}</td>
+          {showCreateInvoiceModal && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000 }}>
+              <div className="card" style={{ width: 'min(920px, 92vw)', maxHeight: '88vh', overflow: 'auto' }}>
+                <div className="card-header"><div><div className="card-title">{tr('New Invoice', 'Invoice i Ri')}</div></div><button className="btn btn-secondary btn-sm" onClick={() => setShowCreateInvoiceModal(false)}>{tr('Close', 'Mbyll')}</button></div>
+                <div className="card-body form-section">
+                  <div className="field-row"><div className="field-group" style={{ flex: 1 }}><label className="field-label">{tr('Customer ID', 'ID e Klientit')}</label><input className="input" value={customerId} onChange={e => setCustomerId(e.target.value)} /></div><div className="field-group" style={{ flex: 1 }}><label className="field-label">{tr('Receiver NUI', 'NUI Marrësit')}</label><input className="input" placeholder="e.g. 810123456" value={receiverNui} onChange={e => setReceiverNui(e.target.value.toUpperCase())} /></div><div className="field-group"><label className="field-label">{tr('Issue Date', 'Data e Lëshimit')}</label><input className="input" type="date" value={issueDate} onChange={e => setIssueDate(e.target.value)} /></div></div>
+                  <div>
+                    <div className="field-label mb-2">{tr('Line Items', 'Rreshtat')}</div>
+                    <table className="lines-table">
+                      <thead>
+                        <tr>
+                          <th>{tr('Description', 'Përshkrimi')}</th>
+                          <th style={{ width: 90 }}>{tr('Qty', 'Sasia')}</th>
+                          <th style={{ width: 110 }}>{tr('Unit Price', 'Çmimi/Njësi')}</th>
+                          <th style={{ width: 90 }}>{tr('Stock?', 'Stok?')}</th>
+                          <th style={{ width: 140 }}>SKU</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-
-                  <div className="btn-group">
-                    <button className="btn btn-secondary" onClick={sendInvoice} disabled={loading || activeInvoice.status !== 'DRAFT'}>Send Invoice</button>
-                    <button className="btn btn-success"  onClick={payInvoice}  disabled={loading || activeInvoice.status !== 'SENT'}>Mark as Paid</button>
+                      </thead>
+                      <tbody>
+                        {invLines.map((l, i) => (
+                          <tr key={i}>
+                            <td><input className="input" value={l.description} onChange={e => editInvLine(i, 'description', e.target.value)} /></td>
+                            <td><input className="input" type="text" inputMode="decimal" value={l.quantity} onChange={e => editInvLine(i, 'quantity', e.target.value)} /></td>
+                            <td><input className="input" type="text" inputMode="decimal" value={l.unitPrice} onChange={e => editInvLine(i, 'unitPrice', e.target.value)} /></td>
+                            <td><input type="checkbox" checked={Boolean(l.isInventoryItem)} onChange={e => editInvLine(i, 'isInventoryItem', e.target.checked)} /></td>
+                            <td><input className="input" placeholder="SKU-001" value={l.sku || ''} onChange={e => editInvLine(i, 'sku', e.target.value.toUpperCase())} disabled={!l.isInventoryItem} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <button className="btn btn-secondary btn-sm mt-3" onClick={() => setInvLines(p => [...p, emptyInvLine])}>{tr('+ Add Line', '+ Shto Rresht')}</button>
                   </div>
+                  <div className="btn-group" style={{ justifyContent: 'flex-end' }}><button className="btn btn-secondary" onClick={() => setShowCreateInvoiceModal(false)}>{tr('Close', 'Mbyll')}</button><button className="btn btn-primary" onClick={createInvoice} disabled={loading}>{tr('Create Invoice', 'Krijo Invoice')}</button></div>
                 </div>
-              ) : (
-                <div className="empty-state" style={{ padding: 20 }}>
-                  <div className="empty-state-icon">📄</div>
-                  <div className="empty-state-text">No invoice loaded</div>
-                </div>
-              )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 
@@ -451,7 +567,7 @@ export const DailyOpsPage: React.FC = () => {
             <div className="card-header">
               <div>
                 <div className="card-title">Record Movement</div>
-                <div className="card-subtitle">Weighted-average cost method</div>
+                <div className="card-subtitle">{tr('Weighted-average cost method', 'Metoda e kostos mesatare të ponderuar')}</div>
               </div>
             </div>
             <div className="card-body form-section">
@@ -481,7 +597,7 @@ export const DailyOpsPage: React.FC = () => {
                 </div>
               </div>
               <div>
-                <button className="btn btn-primary" onClick={recordMovement} disabled={loading}>Record Movement</button>
+                <button className="btn btn-primary" onClick={recordMovement} disabled={loading}>{tr('Record Movement', 'Regjistro Lëvizje')}</button>
               </div>
             </div>
           </div>
@@ -490,14 +606,14 @@ export const DailyOpsPage: React.FC = () => {
             <div className="card-header">
               <div>
                 <div className="card-title">Inventory Valuation</div>
-                <div className="card-subtitle">Current stock value by SKU</div>
+                <div className="card-subtitle">{tr('Current stock value by SKU', 'Vlera aktuale e stokut sipas SKU')}</div>
               </div>
               <button className="btn btn-secondary btn-sm" onClick={loadValuation}>↻</button>
             </div>
             {valuation ? (
               <>
                 <div style={{ padding: '12px 20px', background: 'var(--blue-50)', borderBottom: '1px solid var(--blue-100)' }}>
-                  <span className="muted">Total inventory value: </span>
+                  <span className="muted">{tr('Total inventory value: ', 'Vlera totale e inventarit: ')}</span>
                   <strong style={{ color: 'var(--blue-700)', fontSize: 16 }}>€{valuation.totalValue.toFixed(2)}</strong>
                 </div>
                 <table className="erp-table">
@@ -524,7 +640,7 @@ export const DailyOpsPage: React.FC = () => {
                 </table>
               </>
             ) : (
-              <div className="empty-state"><div className="empty-state-icon">📦</div><div className="empty-state-text">No inventory yet</div></div>
+              <div className="empty-state"><div className="empty-state-icon">IN</div><div className="empty-state-text">{tr('No inventory yet', 'Ende nuk ka inventar')}</div></div>
             )}
           </div>
         </div>
@@ -537,7 +653,7 @@ export const DailyOpsPage: React.FC = () => {
             <div className="card-header">
               <div>
                 <div className="card-title">Apply Storno Correction</div>
-                <div className="card-subtitle">Reverse a posted bill, invoice, or inventory movement</div>
+                <div className="card-subtitle">{tr('Reverse a posted bill, invoice, or inventory movement', 'Kthe mbrapsht një faturë, invoice ose lëvizje inventari të postuar')}</div>
               </div>
             </div>
             <div className="card-body form-section">
@@ -565,7 +681,7 @@ export const DailyOpsPage: React.FC = () => {
 
               <div>
                 <button className="btn btn-danger" onClick={runStorno} disabled={loading || !stornoEntityId}>
-                  {loading ? 'Applying…' : 'Apply Storno'}
+                  {loading ? tr('Applying…', 'Duke aplikuar…') : tr('Apply Storno', 'Apliko Storno')}
                 </button>
               </div>
             </div>
@@ -601,138 +717,7 @@ export const DailyOpsPage: React.FC = () => {
         </div>
       )}
 
-      {/* ── Activity tab ────────────────────────── */}
-      {tab === 'activity' && (
-        <div className="card">
-          <div className="card-header">
-            <div>
-              <div className="card-title">Activity Log</div>
-              <div className="card-subtitle">Timeline of all operations — last 15 events</div>
-            </div>
-            <button className="btn btn-secondary btn-sm" onClick={loadActivities}>↻ Refresh</button>
-          </div>
-          {activities.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-state-icon">🕐</div>
-              <div className="empty-state-text">No activity yet</div>
-              <div className="empty-state-sub">Create a bill or invoice to see activity here</div>
-            </div>
-          ) : (
-            <table className="erp-table">
-              <thead>
-                <tr>
-                  <th>Timestamp</th>
-                  <th>Event Type</th>
-                  <th>Summary</th>
-                  <th>Entity ID</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activities.map(a => (
-                  <tr key={a.id}>
-                    <td className="muted">{new Date(a.at).toLocaleString()}</td>
-                    <td><span className="badge badge-blue" style={{ fontSize: 10 }}>{a.type}</span></td>
-                    <td>{a.summary}</td>
-                    <td className="text-mono muted">{a.entityId ? `${a.entityId.substring(0, 10)}…` : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
     </div>
   );
-};
-
-
-interface BillLineForm {
-  description: string;
-  quantity: number;
-  unitPrice: number;
-  taxCategoryId: string;
-}
-
-interface BillResponse {
-  id: string;
-  supplierId: string;
-  issueDate: string;
-  dueDate: string | null;
-  currency: string;
-  status: string;
-  totalNetAmount: number;
-  lines: BillLineForm[] & { netAmount?: number }[];
-  workflow?: {
-    event?: {
-      type: string;
-      payload: {
-        OriginalReference: string;
-        Date: string;
-        Reason?: string;
-      };
-    };
-    ledger?: {
-      originalReference: string;
-      journalEntries: Array<{
-        id: string;
-        kind: 'ORIGINAL' | 'STORNO';
-        date: string;
-        amount: number;
-      }>;
-    };
-    aiSnapshot?: {
-      totalExpenses: number;
-    };
-  };
-}
-
-interface InvoiceLineForm {
-  description: string;
-  quantity: number;
-  unitPrice: number;
-}
-
-interface InvoiceResponse {
-  id: string;
-  customerId: string;
-  issueDate: string;
-  dueDate: string | null;
-  currency: string;
-  status: string;
-  totalNetAmount: number;
-  lines: InvoiceLineForm[];
-}
-
-interface InventoryValuation {
-  totalValue: number;
-  items: {
-    sku: string;
-    description: string;
-    quantityOnHand: number;
-    averageUnitCost: number;
-  }[];
-  movements: {
-    id: string;
-    sku: string;
-    type: 'RECEIPT' | 'ISSUE';
-    quantity: number;
-    unitCost: number;
-    createdAt: string;
-  }[];
-}
-
-interface ActivityEntry {
-  id: string;
-  type: string;
-  entityId?: string;
-  summary: string;
-  at: string;
-}
-
-const emptyLine: BillLineForm = {
-  description: '',
-  quantity: 1,
-  unitPrice: 0,
-  taxCategoryId: '43'
 };
 

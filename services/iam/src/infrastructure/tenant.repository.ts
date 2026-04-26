@@ -26,12 +26,22 @@ export class TenantRepository {
   async save(tenant: Tenant): Promise<void> {
     this.memStore.set(tenant.id, tenant);
     if (this.ormRepo) {
-      await this.ormRepo.save({
-        id: tenant.id,
+      const exists = (await this.ormRepo.count({ where: { id: tenant.id } })) > 0;
+      const nuiForDb = tenant.nui?.trim() && /^8\d{8}$/.test(tenant.nui.trim()) ? tenant.nui.trim().toUpperCase() : null;
+      const payload = {
         name: tenant.name,
         slug: tenant.slug,
+        nui: nuiForDb,
         active: tenant.active,
-      });
+      };
+      if (exists) {
+        await this.ormRepo.update({ id: tenant.id }, payload);
+      } else {
+        await this.ormRepo.save({
+          id: tenant.id,
+          ...payload,
+        });
+      }
     }
   }
 
@@ -40,6 +50,22 @@ export class TenantRepository {
     if (cached) return cached;
     if (!this.ormRepo) return undefined;
     const row = await this.ormRepo.findOneBy({ id });
+    if (!row) return undefined;
+    return this.toDomain(row);
+  }
+
+  async findByNui(nui: string): Promise<Tenant | undefined> {
+    const normalized = nui.trim().toUpperCase();
+    if (!/^8\d{8}$/.test(normalized)) return undefined;
+    for (const t of this.memStore.values()) {
+      if (t.active && t.nui === normalized) return t;
+    }
+    if (!this.ormRepo) return undefined;
+    const row = await this.ormRepo
+      .createQueryBuilder('t')
+      .where('t.active = :active', { active: true })
+      .andWhere('UPPER(TRIM(t.nui)) = :nui', { nui: normalized })
+      .getOne();
     if (!row) return undefined;
     return this.toDomain(row);
   }
@@ -63,7 +89,13 @@ export class TenantRepository {
   }
 
   private toDomain(row: TenantOrmEntity): Tenant {
-    const tenant = Tenant.rehydrate(row.id, row.name, row.slug, row.active, row.createdAt.toISOString());
+    const raw = row.nui;
+    let normalizedNui =
+      raw != null && String(raw).trim() !== '' ? String(raw).trim().toUpperCase() : '';
+    if (normalizedNui && !/^8\d{8}$/.test(normalizedNui)) {
+      normalizedNui = '';
+    }
+    const tenant = Tenant.rehydrate(row.id, row.name, row.slug, normalizedNui, row.active, row.createdAt.toISOString());
     this.memStore.set(tenant.id, tenant);
     return tenant;
   }

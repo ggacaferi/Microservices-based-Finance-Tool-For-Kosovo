@@ -21,6 +21,10 @@ RUN printf 'server {\n\
   listen 80;\n\
   root /usr/share/nginx/html;\n\
   resolver 127.0.0.11 valid=10s;\n\
+  location = /index.html {\n\
+    add_header Cache-Control "no-store, no-cache, must-revalidate" always;\n\
+    try_files $uri =404;\n\
+  }\n\
   location /api/ {\n\
     set $gw gateway;\n\
     proxy_set_header Host $http_host;\n\

@@ -1,0 +1,43 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway-pdb
+  namespace: guri-finance
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: gateway
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: operations-pdb
+  namespace: guri-finance
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: operations
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ledger-pdb
+  namespace: guri-finance
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ledger
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: compliance-pdb
+  namespace: guri-finance
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: compliance

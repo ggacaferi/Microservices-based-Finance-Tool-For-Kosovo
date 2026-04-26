@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Headers, Param, Post } from '@nestjs/common';
 import { InvoiceService } from '../application/invoices/invoice.service';
+import { CreateInvoiceDto } from '../application/invoices/dto/create-invoice.dto';
 import { IsOptional, IsString } from 'class-validator';
 
 class StornoDto { @IsOptional() @IsString() reason!: string; }
@@ -10,7 +11,7 @@ export class InvoicesController {
   private tenant(tenantId?: string): string { return tenantId || 'public'; }
 
   @Get()               list(@Headers('x-tenant-id') t: string)                                               { return this.svc.list(this.tenant(t)).map((i: any) => ({ ...i, totalNetAmount: this.svc.totalNetAmount(i) })); }
-  @Post()              create(@Headers('x-tenant-id') t: string, @Body() b: any)                               { return this.svc.createDraft(this.tenant(t), b); }
+  @Post()              create(@Headers('x-tenant-id') t: string, @Body() dto: CreateInvoiceDto)                { return this.svc.createDraft(this.tenant(t), dto); }
   @Get(':id')          get(@Headers('x-tenant-id') t: string, @Param('id') id: string)                         { return this.svc.get(this.tenant(t), id); }
   @Post(':id/send')    send(@Headers('x-tenant-id') t: string, @Param('id') id: string)                        { return this.svc.send(this.tenant(t), id); }
   @Post(':id/pay')     pay(@Headers('x-tenant-id') t: string, @Param('id') id: string)                         { return this.svc.pay(this.tenant(t), id); }

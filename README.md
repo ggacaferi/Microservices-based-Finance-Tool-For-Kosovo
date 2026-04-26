@@ -150,6 +150,18 @@ Kubernetes manifests are in `k8s/` and are aligned to the current split services
 - Secrets (DB/JWT/Gemini): `k8s/secrets.yaml`
 - Ingress routing: `k8s/ingress.yaml`
 - HPAs + network policies: `k8s/hpa-network.yaml`
+- Pod disruption budgets: `k8s/pdb.yaml`
+
+### Rollout policy (zero-downtime)
+
+Deployments use rolling strategy with:
+
+- `maxUnavailable: 0`
+- `maxSurge: 1`
+- `minReadySeconds: 10`
+
+This ensures old pods stay available while new pods become ready.
+PDBs protect service availability during node drains/voluntary disruptions.
 
 ### Apply order
 
@@ -162,6 +174,23 @@ kubectl apply -f k8s/postgres.yaml
 kubectl apply -f k8s/deployments.yaml
 kubectl apply -f k8s/ingress.yaml
 kubectl apply -f k8s/hpa-network.yaml
+kubectl apply -f k8s/pdb.yaml
+
+## Event delivery guarantees
+
+Operations now uses an outbox table (`ops_event_outbox`) for domain events.
+
+- State change is committed in Operations.
+- Event is stored in outbox (`PENDING`).
+- Background dispatcher retries until published (`PUBLISHED`).
+
+Every event payload includes:
+
+- `eventId`
+- `idempotencyKey`
+- `occurredAt`
+
+Ledger stores ingested event markers (`ledger_ingested_events`) and skips duplicates by `eventId`/`idempotencyKey`, making replay and retries safe.
 ```
 
 ### Important before production apply

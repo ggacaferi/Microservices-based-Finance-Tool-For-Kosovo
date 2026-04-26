@@ -7,7 +7,7 @@ import { AiEventOrmEntity } from './infrastructure/ai-event.orm-entity';
 
 export interface FinancialInsight {
   id: string;
-  type: 'expense_spike' | 'storno_detected' | 'trend_observation' | 'summary';
+  type: 'expense_spike' | 'trend_observation' | 'summary';
   message: string;
   severity: 'info' | 'warning' | 'critical';
   timestamp: string;
@@ -26,12 +26,11 @@ export interface JournalEntryPostedEvent {
 
 interface TenantState {
   totalExpenses: number;
-  totalStornos: number;
   entryCount: number;
   lastUpdated: string;
   insightCounter: number;
   insights: FinancialInsight[];
-  history: Array<{ reference: string; amount: number; date: string; isStorno: boolean }>;
+  history: Array<{ reference: string; amount: number; date: string }>;
 }
 
 const LEGACY_TO_SKA_ACCOUNT: Record<string, string> = {
@@ -68,9 +67,8 @@ export class AiService implements OnModuleInit {
       const amount = Number(row.amount);
       state.totalExpenses += amount;
       state.entryCount++;
-      if (row.isStorno) state.totalStornos++;
       if (row.date > state.lastUpdated) state.lastUpdated = row.date;
-      state.history.push({ reference: row.reference, amount, date: row.date, isStorno: row.isStorno });
+      state.history.push({ reference: row.reference, amount, date: row.date });
     }
     if (rows.length > 0) this.logger.log(`Rebuilt aggregates from ${rows.length} Postgres events across ${this.tenantStates.size} tenant(s)`);
   }
@@ -79,36 +77,29 @@ export class AiService implements OnModuleInit {
   ingestEvent(event: JournalEntryPostedEvent): void {
     const tenantId = event.tenantId || 'public';
     const state = this.stateFor(tenantId);
-    const isStorno = event.deltaExpenses < 0;
     state.totalExpenses += event.deltaExpenses;
     state.entryCount++;
     state.lastUpdated = event.date;
-    if (isStorno) state.totalStornos++;
 
-    state.history.push({ reference: event.reference, amount: event.deltaExpenses, date: event.date, isStorno });
+    state.history.push({ reference: event.reference, amount: event.deltaExpenses, date: event.date });
 
     if (this.orm) {
       this.orm.save({
         id: uuidv4(), tenantId, reference: event.reference, amount: event.deltaExpenses,
-        date: event.date, isStorno,
-        textContent: `Journal entry ${event.journalEntryId} for ${event.reference}: €${Math.abs(event.deltaExpenses).toFixed(2)} ${isStorno ? 'reversed (storno)' : 'posted'}`,
+        date: event.date, isStorno: false,
+        textContent: `Journal entry ${event.journalEntryId} for ${event.reference}: €${Math.abs(event.deltaExpenses).toFixed(2)} posted`,
       }).catch(err => this.logger.error(`Persist failed: ${err.message}`));
     }
 
-    if (isStorno) {
-      this.addInsight(tenantId, { type: 'storno_detected', severity: 'warning', message: `Storno correction detected for ${event.reference}. Amount reversed: €${Math.abs(event.deltaExpenses).toFixed(2)}`, data: { reference: event.reference, amount: event.deltaExpenses } });
-    }
     if (state.totalExpenses > 10_000) {
       this.addInsight(tenantId, { type: 'expense_spike', severity: 'critical', message: `Total expenses exceeded €10,000. Current: €${state.totalExpenses.toFixed(2)}`, data: { current: state.totalExpenses } });
     }
-    if (state.entryCount > 0 && state.entryCount % 5 === 0 && state.totalStornos / state.entryCount > 0.3) {
-      this.addInsight(tenantId, { type: 'trend_observation', severity: 'warning', message: `High storno rate: ${((state.totalStornos / state.entryCount) * 100).toFixed(1)}% of entries are corrections.`, data: { stornoRate: state.totalStornos / state.entryCount } });
-    }
+    // Storno/correction heuristics intentionally removed: AI must not infer or label stornos.
   }
 
   getSnapshot(tenantId: string) {
     const state = this.stateFor(tenantId);
-    return { totalExpenses: state.totalExpenses, totalStornos: state.totalStornos, netExpenses: state.totalExpenses, entryCount: state.entryCount, lastUpdated: state.lastUpdated || new Date().toISOString(), insights: state.insights.slice(0, 10) };
+    return { totalExpenses: state.totalExpenses, netExpenses: state.totalExpenses, entryCount: state.entryCount, lastUpdated: state.lastUpdated || new Date().toISOString(), insights: state.insights.slice(0, 10) };
   }
 
   getInsights(tenantId: string, limit = 20): FinancialInsight[] { return this.stateFor(tenantId).insights.slice(0, limit); }
@@ -134,13 +125,12 @@ export class AiService implements OnModuleInit {
 
     const summary = {
       totalExpenses: typeof reconciliation?.totalAmount === 'number' ? reconciliation.totalAmount : state.totalExpenses,
-      totalStornos: typeof reconciliation?.stornoCount === 'number' ? reconciliation.stornoCount : state.totalStornos,
       entryCount: typeof reconciliation?.entryCount === 'number' ? reconciliation.entryCount : state.entryCount,
       lastUpdated: state.lastUpdated,
       recentInsights: state.insights.slice(0, 5),
     };
 
-    const fallbackSnapshot = `Tenant ${tenantId} aggregates: totalExpenses=€${Number(summary.totalExpenses).toFixed(2)}, totalStornos=${summary.totalStornos}, entryCount=${summary.entryCount}, lastUpdated=${summary.lastUpdated || 'n/a'}.`;
+    const fallbackSnapshot = `Tenant ${tenantId} aggregates: totalExpenses=€${Number(summary.totalExpenses).toFixed(2)}, entryCount=${summary.entryCount}, lastUpdated=${summary.lastUpdated || 'n/a'}.`;
 
     if (!this.geminiApiKey) {
       return {
@@ -188,7 +178,7 @@ export class AiService implements OnModuleInit {
     const matches = new Set<string>();
 
     if (/(auth|user|tenant|role|permission|login|jwt)/.test(q)) matches.add('iam');
-    if (/(bill|invoice|inventory|storno|operation)/.test(q)) matches.add('operations');
+    if (/(bill|invoice|inventory|operation)/.test(q)) matches.add('operations');
     if (/(ledger|journal|trial|balance|debit|credit|accounting|report|p\&l|profit|loss)/.test(q)) matches.add('ledger');
     if (/(ai|insight|analysis|anomaly|trend|snapshot)/.test(q)) matches.add('ai');
 
@@ -314,10 +304,10 @@ export class AiService implements OnModuleInit {
         });
 
         if (table === 'ledger_journal_entries') {
-          const totals = await client.query<{ entry_count: string; total_amount: string; storno_count: string }>(
+          const totals = await client.query<{ entry_count: string; total_amount: string }>(
             `SELECT COUNT(*)::text AS entry_count,
                     COALESCE(SUM(amount), 0)::text AS total_amount,
-                    COUNT(*) FILTER (WHERE kind = 'STORNO')::text AS storno_count
+                    0::text AS storno_count
                FROM public.${safe}
               WHERE ${tenantSafe} = $1`,
             [tenantId],
@@ -337,7 +327,7 @@ export class AiService implements OnModuleInit {
             metrics: {
               entryCount: Number(totals.rows[0]?.entry_count || 0),
               totalAmount: Number(totals.rows[0]?.total_amount || 0),
-              stornoCount: Number(totals.rows[0]?.storno_count || 0),
+              stornoCount: 0,
               totalDebits: Number(debitCredit.rows[0]?.total_debits || 0),
               totalCredits: Number(debitCredit.rows[0]?.total_credits || 0),
               netBalance: Number(debitCredit.rows[0]?.total_debits || 0) - Number(debitCredit.rows[0]?.total_credits || 0),
@@ -439,7 +429,6 @@ export class AiService implements OnModuleInit {
     if (existing) return existing;
     const created: TenantState = {
       totalExpenses: 0,
-      totalStornos: 0,
       entryCount: 0,
       lastUpdated: '',
       insightCounter: 0,

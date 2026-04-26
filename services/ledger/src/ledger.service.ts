@@ -4,13 +4,25 @@ import { Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 import { Kafka, logLevel, Producer } from 'kafkajs';
 import { JournalEntryOrmEntity } from './infrastructure/journal-entry.orm-entity';
+import { LedgerIngestedEventOrmEntity } from './infrastructure/ledger-ingested-event.orm-entity';
 
 export interface JournalLine    { account: string; debit: number; credit: number; }
 export interface JournalEntry   { id: string; tenantId: string; reference: string; date: string; kind: 'ORIGINAL' | 'STORNO'; lines: JournalLine[]; amount: number; reversedBy?: string; }
+interface EventMeta { eventId?: string; idempotencyKey?: string; occurredAt?: string; }
 
 /** Events consumed from Operations Service via HTTP POST to /api/v1/ledger/events */
-export interface BillPostedEvent   { type: 'billPosted'; tenantId: string; billId: string; supplierId: string; totalNetAmount: number; date: string; originalReference: string; }
-export interface BillRevertedEvent { type: 'billReverted'; tenantId: string; billId: string; originalReference: string; date: string; reason?: string; }
+export interface BillPostedEvent extends EventMeta   { type: 'billPosted'; tenantId: string; billId: string; supplierId: string; totalNetAmount: number; date: string; originalReference: string; }
+export interface BillRevertedEvent extends EventMeta { type: 'billReverted'; tenantId: string; billId: string; originalReference: string; date: string; reason?: string; }
+export interface BillPaidEvent extends EventMeta     { type: 'billPaid'; tenantId: string; billId: string; totalNetAmount: number; date: string; originalReference: string; }
+export interface InvoiceCreatedEvent extends EventMeta {
+  type: 'invoiceCreated';
+  tenantId: string;
+  invoiceId: string;
+  customerId: string;
+  totalNetAmount: number;
+  date: string;
+  originalReference: string;
+}
 export interface InvoiceSentEvent {
   type: 'invoiceSent';
   tenantId: string;
@@ -51,6 +63,8 @@ export interface InventoryMovementRecordedEvent {
 export type IncomingEvent =
   | BillPostedEvent
   | BillRevertedEvent
+  | BillPaidEvent
+  | InvoiceCreatedEvent
   | InvoiceSentEvent
   | InvoicePaidEvent
   | InvoiceRevertedEvent
@@ -87,6 +101,8 @@ const LEGACY_TO_SKA_ACCOUNT: Record<string, string> = {
 export class LedgerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger  = new Logger(LedgerService.name);
   private readonly mem: JournalEntry[] = [];
+  private readonly seenEventIds = new Set<string>();
+  private readonly seenIdempotencyKeys = new Set<string>();
   private readonly aiUrl   = process.env.AI_SERVICE_URL || 'http://ai:3005';
   private readonly kafkaBrokers = (process.env.KAFKA_BROKERS || '').split(',').map(b => b.trim()).filter(Boolean);
   private readonly kafkaEnabled = this.kafkaBrokers.length > 0;
@@ -99,6 +115,8 @@ export class LedgerService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Optional() @InjectRepository(JournalEntryOrmEntity, 'ledger')
     private readonly orm?: Repository<JournalEntryOrmEntity>,
+    @Optional() @InjectRepository(LedgerIngestedEventOrmEntity, 'ledger')
+    private readonly ingestedOrm?: Repository<LedgerIngestedEventOrmEntity>,
   ) {
     this.logger.log(this.orm ? 'LedgerService: Postgres-backed' : 'LedgerService: in-memory');
   }
@@ -128,12 +146,58 @@ export class LedgerService implements OnModuleInit, OnModuleDestroy {
   }
 
   async handleEvent(event: IncomingEvent): Promise<void> {
+    if (!(await this.shouldProcess(event))) return;
     if (event.type === 'billPosted')   await this.onBillPosted(event);
     if (event.type === 'billReverted') await this.onBillReverted(event);
+    if (event.type === 'billPaid') await this.onBillPaid(event);
+    if (event.type === 'invoiceCreated') await this.onInvoiceCreated(event);
     if (event.type === 'invoiceSent') await this.onInvoiceSent(event);
     if (event.type === 'invoicePaid') await this.onInvoicePaid(event);
     if (event.type === 'invoiceReverted') await this.onInvoiceReverted(event);
     if (event.type === 'inventoryMovementRecorded') await this.onInventoryMovementRecorded(event);
+  }
+
+  private async shouldProcess(event: IncomingEvent): Promise<boolean> {
+    const eventId = (event as any).eventId as string | undefined;
+    const idempotencyKey = (event as any).idempotencyKey as string | undefined;
+    if (!eventId && !idempotencyKey) return true;
+
+    if (this.ingestedOrm) {
+      if (idempotencyKey) {
+        const where: any = { eventType: event.type, idempotencyKey };
+        if (event.tenantId) where.tenantId = event.tenantId;
+        const exists = await this.ingestedOrm.findOne({ where });
+        if (exists) {
+          this.logger.warn(`Duplicate event skipped (idempotencyKey): ${idempotencyKey}`);
+          return false;
+        }
+      }
+
+      try {
+        await this.ingestedOrm.save({
+          eventId: eventId || uuidv4(),
+          tenantId: event.tenantId || null,
+          eventType: event.type,
+          idempotencyKey: idempotencyKey || null,
+        });
+        return true;
+      } catch {
+        this.logger.warn(`Duplicate event skipped (eventId): ${eventId || 'none'}`);
+        return false;
+      }
+    }
+
+    if (eventId && this.seenEventIds.has(eventId)) {
+      this.logger.warn(`Duplicate event skipped (memory/eventId): ${eventId}`);
+      return false;
+    }
+    if (idempotencyKey && this.seenIdempotencyKeys.has(idempotencyKey)) {
+      this.logger.warn(`Duplicate event skipped (memory/idempotencyKey): ${idempotencyKey}`);
+      return false;
+    }
+    if (eventId) this.seenEventIds.add(eventId);
+    if (idempotencyKey) this.seenIdempotencyKeys.add(idempotencyKey);
+    return true;
   }
 
   getAllEntries(tenantId: string, kind?: string): JournalEntry[] {
@@ -296,6 +360,11 @@ export class LedgerService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async onInvoiceSent(event: InvoiceSentEvent): Promise<void> {
+    // Commercial workflow transition only. Accounting recognition happens on invoiceCreated.
+    this.logger.debug(`Invoice ${event.invoiceId} sent (no additional ledger posting)`);
+  }
+
+  private async onInvoiceCreated(event: InvoiceCreatedEvent): Promise<void> {
     const entry: JournalEntry = {
       id: uuidv4(), tenantId: event.tenantId, reference: event.originalReference, date: event.date, kind: 'ORIGINAL', amount: event.totalNetAmount,
       lines: [
@@ -306,6 +375,18 @@ export class LedgerService implements OnModuleInit, OnModuleDestroy {
     this.mem.push(entry);
     await this.persist(entry);
     await this.notifyAi({ type: 'journalEntryPosted', tenantId: event.tenantId, journalEntryId: entry.id, reference: entry.reference, date: entry.date, deltaExpenses: -event.totalNetAmount });
+  }
+
+  private async onBillPaid(event: BillPaidEvent): Promise<void> {
+    const entry: JournalEntry = {
+      id: uuidv4(), tenantId: event.tenantId, reference: `${event.originalReference}-PAYMENT`, date: event.date, kind: 'ORIGINAL', amount: event.totalNetAmount,
+      lines: [
+        { account: SKA.ACCOUNTS_PAYABLE, debit: event.totalNetAmount, credit: 0 },
+        { account: SKA.CASH, debit: 0, credit: event.totalNetAmount },
+      ],
+    };
+    this.mem.push(entry);
+    await this.persist(entry);
   }
 
   private async onInvoicePaid(event: InvoicePaidEvent): Promise<void> {

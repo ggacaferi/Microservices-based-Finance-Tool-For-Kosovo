@@ -7,7 +7,7 @@ import { AiEventOrmEntity } from '../../infrastructure/persistence/ai/ai-event.o
 
 export interface FinancialInsight {
   id: string;
-  type: 'expense_spike' | 'storno_detected' | 'trend_observation' | 'summary';
+  type: 'expense_spike' | 'trend_observation' | 'summary';
   message: string;
   severity: 'info' | 'warning' | 'critical';
   timestamp: string;
@@ -16,7 +16,6 @@ export interface FinancialInsight {
 
 export interface FinancialSnapshot {
   totalExpenses: number;
-  totalStornos: number;
   netExpenses: number;
   entryCount: number;
   lastUpdated: string;
@@ -37,11 +36,10 @@ export class AiFinancialSnapshotService implements OnModuleInit {
   private readonly logger = new Logger(AiFinancialSnapshotService.name);
 
   private totalExpenses = 0;
-  private totalStornos = 0;
   private entryCount = 0;
   private lastUpdated = '';
   private readonly insights: FinancialInsight[] = [];
-  private readonly eventHistory: Array<{ reference: string; amount: number; date: string; isStorno: boolean }> = [];
+  private readonly eventHistory: Array<{ reference: string; amount: number; date: string }> = [];
   private insightCounter = 0;
 
   constructor(
@@ -64,21 +62,14 @@ export class AiFinancialSnapshotService implements OnModuleInit {
   }
 
   private ingestJournalEntry(event: JournalEntryPostedEvent): void {
-    const isStorno = event.deltaExpenses < 0;
-
     this.totalExpenses += event.deltaExpenses;
     this.entryCount++;
     this.lastUpdated = event.date;
-
-    if (isStorno) {
-      this.totalStornos++;
-    }
 
     this.eventHistory.push({
       reference: event.reference,
       amount: event.deltaExpenses,
       date: event.date,
-      isStorno,
     });
 
     // Persist to pgvector-backed Postgres for RAG retrieval
@@ -88,19 +79,10 @@ export class AiFinancialSnapshotService implements OnModuleInit {
         reference: event.reference,
         amount: event.deltaExpenses,
         date: event.date,
-        isStorno,
+        isStorno: false,
         textContent: `Journal entry ${event.journalEntryId} for ${event.reference}: ` +
-          `€${Math.abs(event.deltaExpenses).toFixed(2)} ${isStorno ? 'reversed (storno)' : 'posted'}`,
+          `€${Math.abs(event.deltaExpenses).toFixed(2)} posted`,
       }).catch((err) => this.logger.error(`Failed to persist AI event: ${err.message}`));
-    }
-
-    if (isStorno) {
-      this.addInsight({
-        type: 'storno_detected',
-        message: `Storno correction detected for ${event.reference}. Amount reversed: €${Math.abs(event.deltaExpenses).toFixed(2)}`,
-        severity: 'warning',
-        data: { reference: event.reference, amount: event.deltaExpenses },
-      });
     }
 
     if (this.totalExpenses > 10000) {
@@ -113,15 +95,7 @@ export class AiFinancialSnapshotService implements OnModuleInit {
     }
 
     if (this.entryCount > 0 && this.entryCount % 5 === 0) {
-      const stornoRate = this.totalStornos / this.entryCount;
-      if (stornoRate > 0.3) {
-        this.addInsight({
-          type: 'trend_observation',
-          message: `High storno rate: ${(stornoRate * 100).toFixed(1)}% of entries are corrections.`,
-          severity: 'warning',
-          data: { stornoRate, totalEntries: this.entryCount, totalStornos: this.totalStornos },
-        });
-      }
+      // Storno/correction heuristics intentionally removed: AI must not infer or label stornos.
     }
   }
 
@@ -138,7 +112,6 @@ export class AiFinancialSnapshotService implements OnModuleInit {
   getSnapshot(): FinancialSnapshot {
     return {
       totalExpenses: this.totalExpenses,
-      totalStornos: this.totalStornos,
       netExpenses: this.totalExpenses,
       entryCount: this.entryCount,
       lastUpdated: this.lastUpdated || new Date().toISOString(),
@@ -166,23 +139,10 @@ export class AiFinancialSnapshotService implements OnModuleInit {
 
     if (q.includes('total expense') || q.includes('how much') || q.includes('spent')) {
       answer = `Your total expenses are currently €${this.totalExpenses.toFixed(2)} across ${this.entryCount} journal entries.`;
-      if (this.totalStornos > 0) {
-        answer += ` This includes ${this.totalStornos} storno correction(s).`;
-      }
       confidence = 0.95;
-      sources.push('journal_entries_aggregate', 'storno_history');
-    } else if (q.includes('storno') || q.includes('reversal') || q.includes('correction')) {
-      const stornoEvents = this.eventHistory.filter((e) => e.isStorno);
-      answer = `There have been ${this.totalStornos} storno correction(s) recorded.`;
-      if (stornoEvents.length > 0) {
-        const totalReversed = stornoEvents.reduce((s, e) => s + Math.abs(e.amount), 0);
-        answer += ` Total amount reversed: €${totalReversed.toFixed(2)}.`;
-        answer += ` Latest: ${stornoEvents[stornoEvents.length - 1]?.reference ?? 'N/A'}.`;
-      }
-      confidence = 0.92;
-      sources.push('storno_history', 'journal_entries');
+      sources.push('journal_entries_aggregate');
     } else if (q.includes('balance') || q.includes('net') || q.includes('profit')) {
-      answer = `Net expenses stand at €${this.totalExpenses.toFixed(2)}. The books have ${this.entryCount} journal entries with ${this.totalStornos} storno corrections applied.`;
+      answer = `Net expenses stand at €${this.totalExpenses.toFixed(2)}. The books have ${this.entryCount} journal entries recorded.`;
       confidence = 0.88;
       sources.push('journal_entries_aggregate', 'trial_balance');
     } else if (q.includes('insight') || q.includes('issue') || q.includes('problem') || q.includes('warning')) {
@@ -199,14 +159,13 @@ export class AiFinancialSnapshotService implements OnModuleInit {
       answer = `Financial Overview:\n` +
         `• Total expenses: €${this.totalExpenses.toFixed(2)}\n` +
         `• Journal entries: ${this.entryCount}\n` +
-        `• Storno corrections: ${this.totalStornos}\n` +
         `• Active insights: ${this.insights.length}\n` +
         `• Books balanced: Yes (double-entry enforced)`;
       confidence = 0.96;
       sources.push('journal_entries_aggregate', 'insights_engine', 'ledger_summary');
     } else {
       answer = `Based on available financial data: total expenses are €${this.totalExpenses.toFixed(2)} with ${this.entryCount} entries. ` +
-        `Try asking about expenses, stornos, balance, or insights for specific analysis.`;
+        `Try asking about expenses, balance, or insights for specific analysis.`;
       confidence = 0.6;
       sources.push('general_knowledge');
     }
@@ -218,7 +177,7 @@ export class AiFinancialSnapshotService implements OnModuleInit {
     return this.insights.slice(0, limit);
   }
 
-  getEventHistory(): Array<{ reference: string; amount: number; date: string; isStorno: boolean }> {
+  getEventHistory(): Array<{ reference: string; amount: number; date: string }> {
     return [...this.eventHistory];
   }
 }

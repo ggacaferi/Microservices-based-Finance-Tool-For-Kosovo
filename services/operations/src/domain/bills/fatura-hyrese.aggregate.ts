@@ -4,6 +4,7 @@ import { ComplianceClient } from '../../compliance/compliance.client';
 export enum BillStatus {
   Draft    = 'DRAFT',
   Posted   = 'POSTED',
+  Paid     = 'PAID',
   Reverted = 'REVERTED',
 }
 
@@ -13,6 +14,8 @@ export interface BillLineProps {
   unitPrice: number;
   taxCategoryId: string;
   accountCode: string;
+  isInventoryItem?: boolean;
+  sku?: string;
 }
 
 export class BillLine {
@@ -21,6 +24,8 @@ export class BillLine {
   readonly unitPrice: number;
   readonly taxCategoryId: string;
   readonly accountCode: string;
+  readonly isInventoryItem: boolean;
+  readonly sku?: string;
 
   constructor(props: BillLineProps) {
     if (!props.description?.trim()) throw new Error('Bill line description is required.');
@@ -32,6 +37,8 @@ export class BillLine {
     this.unitPrice     = props.unitPrice;
     this.taxCategoryId = props.taxCategoryId;
     this.accountCode   = props.accountCode;
+    this.isInventoryItem = Boolean(props.isInventoryItem);
+    this.sku = props.sku;
   }
 
   get netAmount(): number { return this.quantity * this.unitPrice; }
@@ -98,5 +105,12 @@ export class FaturaHyrese {
       throw new Error(`Storno is only allowed for Posted bills. Current: ${this._status}`);
     }
     this._status = BillStatus.Reverted;
+  }
+
+  pay(): void {
+    if (this._status !== BillStatus.Posted) {
+      throw new Error(`Bill can only be paid from Posted. Current: ${this._status}`);
+    }
+    this._status = BillStatus.Paid;
   }
 }

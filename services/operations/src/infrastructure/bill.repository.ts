@@ -25,7 +25,7 @@ export class BillRepository {
       issueDate: agg.issueDate instanceof Date ? agg.issueDate.toISOString().split('T')[0] : String(agg.issueDate),
       dueDate: agg.dueDate ? (agg.dueDate instanceof Date ? agg.dueDate.toISOString().split('T')[0] : String(agg.dueDate)) : null,
       currency: agg.currency, status: agg.status,
-      lines: agg.lines.map((l: { description: string; quantity: number; unitPrice: number; taxCategoryId: string; accountCode: string }) => ({ description: l.description, quantity: l.quantity, unitPrice: l.unitPrice, taxCategoryId: l.taxCategoryId, accountCode: l.accountCode })),
+      lines: agg.lines.map((l: { description: string; quantity: number; unitPrice: number; taxCategoryId: string; accountCode: string; isInventoryItem?: boolean; sku?: string }) => ({ description: l.description, quantity: l.quantity, unitPrice: l.unitPrice, taxCategoryId: l.taxCategoryId, accountCode: l.accountCode, isInventoryItem: Boolean(l.isInventoryItem), sku: l.sku })),
     });
   }
 

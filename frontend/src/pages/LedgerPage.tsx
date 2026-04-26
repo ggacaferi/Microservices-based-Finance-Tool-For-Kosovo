@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { getLanguage } from '../language';
+import { useLanguage } from '../useLanguage';
 
 export const LedgerPage: React.FC = () => {
+  const lang = useLanguage();
+  const tr = (en: string, sq: string) => (lang === 'en' ? en : sq);
   const [summary, setSummary] = useState<any>(null);
   const [entries, setEntries] = useState<any[]>([]);
   const [trialBalance, setTrialBalance] = useState<any[]>([]);
@@ -13,8 +17,21 @@ export const LedgerPage: React.FC = () => {
   const [reportYear, setReportYear] = useState<number>(new Date().getFullYear());
   const [reportQuarter, setReportQuarter] = useState<number>(Math.floor(new Date().getMonth() / 3) + 1);
 
+  const api = axios.create({ baseURL: '/api/v1' });
+  api.interceptors.request.use((config) => {
+    const token = localStorage.getItem('guri_token');
+    const rawUser = localStorage.getItem('guri_user');
+    let tenantId: string | undefined;
+    try { tenantId = rawUser ? JSON.parse(rawUser)?.tenantId : undefined; } catch {}
+    config.headers = config.headers || {};
+    if (token) (config.headers as any).Authorization = `Bearer ${token}`;
+    if (tenantId) (config.headers as any)['x-tenant-id'] = tenantId;
+    (config.headers as any)['x-lang'] = getLanguage();
+    return config;
+  });
+
   const download = async (kind: 'profit-loss' | 'balance-sheet') => {
-    const res = await axios.get(`/api/v1/ledger/reports/${kind}?year=${reportYear}&quarter=${reportQuarter}`, {
+    const res = await api.get(`/ledger/reports/${kind}?year=${reportYear}&quarter=${reportQuarter}`, {
       responseType: 'blob',
     });
     const url = window.URL.createObjectURL(new Blob([res.data], { type: 'text/csv;charset=utf-8' }));
@@ -30,9 +47,9 @@ export const LedgerPage: React.FC = () => {
   const loadAll = async () => {
     try {
       const [s, e, tb] = await Promise.all([
-        axios.get('/api/v1/ledger/summary'),
-        axios.get(`/api/v1/ledger/journal-entries${kindFilter ? `?kind=${kindFilter}` : ''}`),
-        axios.get('/api/v1/ledger/trial-balance'),
+        api.get('/ledger/summary'),
+        api.get(`/ledger/journal-entries${kindFilter ? `?kind=${kindFilter}` : ''}`),
+        api.get('/ledger/trial-balance'),
       ]);
       setSummary(s.data);
       setEntries(e.data);
@@ -43,7 +60,7 @@ export const LedgerPage: React.FC = () => {
   const lookupBill = async () => {
     if (!billIdLookup.trim()) return;
     try {
-      const res = await axios.get(`/api/v1/ledger/bill/${billIdLookup.trim()}`);
+      const res = await api.get(`/ledger/bill/${billIdLookup.trim()}`);
       setBillWorkflow(res.data);
     } catch { setBillWorkflow(null); }
   };
@@ -57,11 +74,11 @@ export const LedgerPage: React.FC = () => {
       {summary && (
         <div className="grid-auto">
           {[
-            { label: 'Total Entries',    value: summary.totalEntries,    color: 'var(--blue-700)' },
-            { label: 'Original',         value: summary.originalEntries, color: 'var(--green-600)' },
-            { label: 'Storno',           value: summary.stornoEntries,   color: 'var(--amber-600)' },
-            { label: 'Total Debits',     value: `€${(summary.totalDebits ?? 0).toFixed(2)}`,  color: 'var(--slate-900)' },
-            { label: 'Total Credits',    value: `€${(summary.totalCredits ?? 0).toFixed(2)}`, color: 'var(--slate-900)' },
+            { label: tr('Total Entries', 'Totali i Regjistrimeve'), value: summary.totalEntries, color: 'var(--blue-700)' },
+            { label: tr('Original', 'Origjinale'), value: summary.originalEntries, color: 'var(--green-600)' },
+            { label: 'Storno', value: summary.stornoEntries, color: 'var(--amber-600)' },
+            { label: tr('Total Debits', 'Debite Totale'), value: `€${(summary.totalDebits ?? 0).toFixed(2)}`, color: 'var(--slate-900)' },
+            { label: tr('Total Credits', 'Kredite Totale'), value: `€${(summary.totalCredits ?? 0).toFixed(2)}`, color: 'var(--slate-900)' },
           ].map(s => (
             <div key={s.label} className="stat-card">
               <div className="stat-label">{s.label}</div>
@@ -69,9 +86,9 @@ export const LedgerPage: React.FC = () => {
             </div>
           ))}
           <div className="stat-card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-            <div className="stat-label">Books Status</div>
+            <div className="stat-label">{tr('Books Status', 'Gjendja e Librave')}</div>
             <span className={`badge ${summary.balanced ? 'badge-green' : 'badge-red'}`} style={{ fontSize: 13, padding: '4px 10px', marginTop: 8 }}>
-              {summary.balanced ? '✓ Balanced' : '✗ Imbalanced'}
+              {summary.balanced ? tr('✓ Balanced', '✓ I balancuar') : tr('✗ Imbalanced', '✗ I pa-balancuar')}
             </span>
           </div>
         </div>
@@ -81,20 +98,20 @@ export const LedgerPage: React.FC = () => {
       <div className="card">
         <div className="card-header">
           <div className="tabs" style={{ borderBottom: 'none', marginBottom: 0 }}>
-            <button className={`tab ${tab === 'entries' ? 'active' : ''}`} onClick={() => setTab('entries')}>Journal Entries</button>
-            <button className={`tab ${tab === 'trial'   ? 'active' : ''}`} onClick={() => setTab('trial')}>Trial Balance</button>
-            <button className={`tab ${tab === 'lookup'  ? 'active' : ''}`} onClick={() => setTab('lookup')}>Bill Lookup</button>
-            <button className={`tab ${tab === 'reports' ? 'active' : ''}`} onClick={() => setTab('reports')}>Tax Reports</button>
+            <button className={`tab ${tab === 'entries' ? 'active' : ''}`} onClick={() => setTab('entries')}>{tr('Journal Entries', 'Regjistrimet')}</button>
+            <button className={`tab ${tab === 'trial'   ? 'active' : ''}`} onClick={() => setTab('trial')}>{tr('Trial Balance', 'Bilanci Provues')}</button>
+            <button className={`tab ${tab === 'lookup'  ? 'active' : ''}`} onClick={() => setTab('lookup')}>{tr('Bill Lookup', 'Kërko Faturë')}</button>
+            <button className={`tab ${tab === 'reports' ? 'active' : ''}`} onClick={() => setTab('reports')}>{tr('Tax Reports', 'Raportet Tatimore')}</button>
           </div>
           <div className="card-header-actions">
             {tab === 'entries' && (
               <select className="select" style={{ width: 140 }} value={kindFilter} onChange={e => setKindFilter(e.target.value)}>
-                <option value="">All Entries</option>
+                <option value="">{tr('All Entries', 'Të gjitha')}</option>
                 <option value="ORIGINAL">Original</option>
                 <option value="STORNO">Storno</option>
               </select>
             )}
-            <button className="btn btn-secondary btn-sm" onClick={loadAll}>↻ Refresh</button>
+            <button className="btn btn-secondary btn-sm" onClick={loadAll}>{tr('↻ Refresh', '↻ Rifresko')}</button>
           </div>
         </div>
 

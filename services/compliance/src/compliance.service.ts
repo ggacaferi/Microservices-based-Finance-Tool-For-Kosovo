@@ -1,7 +1,8 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import {
   TaxCategory, AccountCode, ComplianceRule, ComplianceBundle,
-  KOSOVO_TAX_CATEGORIES, KOSOVO_CHART_OF_ACCOUNTS, COMPLIANCE_RULES,
+  KOSOVO_TAX_CATEGORIES, KOSOVO_CHART_OF_ACCOUNTS, COMPLIANCE_RULES, ComplianceLang,
+  localizeTaxCategory, localizeAccount, localizeRule,
 } from './tax-taxonomy';
 
 @Injectable()
@@ -30,22 +31,28 @@ export class ComplianceService implements OnModuleInit {
     this.lastRefreshed    = new Date().toISOString();
   }
 
-  getTaxCategories(): TaxCategory[]                          { return this.taxCategories; }
+  private lang(l?: string): ComplianceLang { return (String(l || 'en').toLowerCase() === 'sq' ? 'sq' : 'en'); }
+
+  getTaxCategories(lang?: string): TaxCategory[]            { return this.taxCategories.map(t => localizeTaxCategory(t, this.lang(lang))); }
   getAccount(code: string): AccountCode | undefined          { return this.chartOfAccounts.find(a => a.code === code); }
-  getAccountsByType(type: AccountCode['type']): AccountCode[]{ return this.chartOfAccounts.filter(a => a.type === type); }
-  getChartOfAccounts(): AccountCode[]                        { return this.chartOfAccounts; }
+  getAccountsByType(type: AccountCode['type'], lang?: string): AccountCode[]{ return this.chartOfAccounts.filter(a => a.type === type).map(a => localizeAccount(a, this.lang(lang))); }
+  getChartOfAccounts(lang?: string): AccountCode[]           { return this.chartOfAccounts.map(a => localizeAccount(a, this.lang(lang))); }
   getTaxCategory(id: string): TaxCategory | undefined        { return this.taxCategories.find(t => t.id === id); }
   getAccountByCode(code: string): AccountCode | undefined    { return this.chartOfAccounts.find(a => a.code === code); }
   isLeafAccount(code: string): boolean                       { return !this.chartOfAccounts.some(a => a.parentCode === code); }
-  getRules(context?: string): ComplianceRule[]               { return context ? this.rules.filter(r => r.context === context) : this.rules; }
+  getRules(context?: string, lang?: string): ComplianceRule[] {
+    const filtered = context ? this.rules.filter(r => r.context === context) : this.rules;
+    return filtered.map(r => localizeRule(r, this.lang(lang)));
+  }
 
-  getBundle(): ComplianceBundle {
+  getBundle(lang?: string): ComplianceBundle {
+    const l = this.lang(lang);
     return {
       version: this.version,
       lastRefreshed: this.lastRefreshed,
-      taxCategories: this.taxCategories,
-      chartOfAccounts: this.chartOfAccounts,
-      rules: this.rules,
+      taxCategories: this.taxCategories.map(t => localizeTaxCategory(t, l)),
+      chartOfAccounts: this.chartOfAccounts.map(a => localizeAccount(a, l)),
+      rules: this.rules.map(r => localizeRule(r, l)),
     };
   }
 
@@ -66,8 +73,10 @@ export class ComplianceService implements OnModuleInit {
       violations.push({ code, field, message, legalBasis });
     };
 
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const containsPersonalData = (text: string): boolean => {
       if (!text) return false;
+      if (UUID_RE.test(text.trim())) return false; // system UUIDs are not personal data
       const email = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
       const phone = /\+?\d[\d\s-]{7,}\d/;
       const personalNo = /\b\d{10}\b/;

@@ -4,10 +4,11 @@ import { BillStatus, FaturaHyrese } from '../../domain/bills/fatura-hyrese.aggre
 import { BillRepository } from '../../infrastructure/bill.repository';
 import { ActivityLogService } from '../operations/activity-log.service';
 import { CrossServiceEventPublisher } from '../../events/cross-service-event.publisher';
+import { InventoryService } from '../inventory/inventory.service';
 
 export interface CreateBillInput {
   supplierId: string; issueDate: string; dueDate?: string; currency: string;
-  lineItems: { description: string; quantity: number; unitPrice: number; taxCategoryId: string; accountCode: string }[];
+  lineItems: { description: string; quantity: number; unitPrice: number; taxCategoryId: string; accountCode: string; isInventoryItem?: boolean; sku?: string }[];
 }
 
 @Injectable()
@@ -17,6 +18,7 @@ export class BillService {
     private readonly billRepo: BillRepository,
     private readonly activityLog: ActivityLogService,
     private readonly eventPublisher: CrossServiceEventPublisher,
+    private readonly inventoryService: InventoryService,
   ) {}
 
   async createBill(tenantId: string, input: CreateBillInput): Promise<FaturaHyrese> {
@@ -29,6 +31,20 @@ export class BillService {
       lines: input.lineItems.map(l => ({ description: l.description, quantity: l.quantity, unitPrice: l.unitPrice, taxCategoryId: l.taxCategoryId, accountCode: l.accountCode })),
     });
     await this.billRepo.save(tenantId, bill);
+
+    const inventoryLines = input.lineItems.filter(l => l.isInventoryItem);
+    for (const l of inventoryLines) {
+      if (!l.sku?.trim()) throw new BadRequestException('Inventory line must include SKU.');
+      await this.inventoryService.recordMovement(tenantId, {
+        sku: l.sku.trim().toUpperCase(),
+        description: l.description,
+        type: 'RECEIPT',
+        quantity: l.quantity,
+        unitCost: l.unitPrice,
+        note: `Auto from bill ${bill.id}`,
+      });
+    }
+
     this.activityLog.record(tenantId, 'BILL_DRAFT_CREATED', { entityId: bill.id, summary: `Bill draft created for supplier ${bill.supplierId}` });
     return bill;
   }
@@ -46,6 +62,22 @@ export class BillService {
     await this.billRepo.save(tenantId, bill);
     this.activityLog.record(tenantId, 'BILL_POSTED', { entityId: bill.id, summary: `Bill ${bill.id} posted` });
     await this.eventPublisher.publish({ type: 'billPosted', tenantId, billId: bill.id, supplierId: bill.supplierId, totalNetAmount: bill.totalNetAmount, date: new Date().toISOString(), originalReference: `Bill-${bill.id}` });
+    return bill;
+  }
+
+  async payBill(tenantId: string, id: string): Promise<FaturaHyrese> {
+    const bill = await this.findOrFail(tenantId, id);
+    try { bill.pay(); } catch (e: any) { throw new BadRequestException(e.message); }
+    await this.billRepo.save(tenantId, bill);
+    this.activityLog.record(tenantId, 'BILL_PAID', { entityId: bill.id, summary: `Bill ${bill.id} paid` });
+    await this.eventPublisher.publish({
+      type: 'billPaid',
+      tenantId,
+      billId: bill.id,
+      totalNetAmount: bill.totalNetAmount,
+      date: new Date().toISOString(),
+      originalReference: `Bill-${bill.id}`,
+    });
     return bill;
   }
 

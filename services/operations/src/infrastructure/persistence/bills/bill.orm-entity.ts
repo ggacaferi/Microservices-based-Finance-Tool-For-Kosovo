@@ -10,5 +10,5 @@ export class BillOrmEntity {
   @Column({ type: 'date', nullable: true }) dueDate?: string | null;
   @Column() currency!: string;
   @Column({ type: 'varchar' }) status!: BillStatus;
-  @Column({ type: 'jsonb' }) lines!: { description: string; quantity: number; unitPrice: number; taxCategoryId: string; accountCode: string }[];
+  @Column({ type: 'jsonb' }) lines!: { description: string; quantity: number; unitPrice: number; taxCategoryId: string; accountCode: string; isInventoryItem?: boolean; sku?: string }[];
 }

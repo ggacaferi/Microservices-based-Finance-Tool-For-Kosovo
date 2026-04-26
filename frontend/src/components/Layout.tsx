@@ -1,9 +1,13 @@
 import React from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
+import { setLanguage } from '../language';
+import { useLanguage } from '../useLanguage';
 
 interface LayoutProps {
   title: string;
   subtitle?: string;
+  /** Main content grows to fill viewport below the topbar (for full-page tools). */
+  contentFill?: boolean;
   children: React.ReactNode;
 }
 
@@ -34,8 +38,10 @@ const SparkleIcon = () => (
     <path strokeLinecap="round" strokeLinejoin="round" d="M5 3l1.5 4.5L11 9l-4.5 1.5L5 15l-1.5-4.5L-1 9l4.5-1.5L5 3zM19 11l1 3 3 1-3 1-1 3-1-3-3-1 3-1 1-3z"/>
   </svg>
 );
-export const Layout: React.FC<LayoutProps> = ({ title, subtitle, children }) => {
+export const Layout: React.FC<LayoutProps> = ({ title, subtitle, contentFill, children }) => {
   const navigate = useNavigate();
+  const lang = useLanguage();
+  const tr = (en: string, sq: string) => (lang === 'en' ? en : sq);
   const raw = localStorage.getItem('guri_user');
   const user = raw ? JSON.parse(raw) : null;
   const role = user?.role as 'admin' | 'accountant' | 'data_clerk' | 'auditor' | undefined;
@@ -62,17 +68,17 @@ export const Layout: React.FC<LayoutProps> = ({ title, subtitle, children }) => 
         <nav className="sidebar-nav">
           {(can(['admin', 'accountant', 'data_clerk']) || can(['admin', 'accountant', 'auditor'])) && (
             <div className="nav-group">
-              <div className="nav-group-label">Accounting</div>
+              <div className="nav-group-label">{tr('Accounting', 'Kontabilitet')}</div>
               {can(['admin', 'accountant', 'data_clerk']) && (
                 <NavLink to="/daily-ops" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                   <BriefcaseIcon />
-                  Daily Operations
+                  {tr('Daily Operations', 'Operacionet Ditore')}
                 </NavLink>
               )}
               {can(['admin', 'accountant', 'auditor']) && (
                 <NavLink to="/ledger" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                   <BookIcon />
-                  General Ledger
+                  {tr('General Ledger', 'Libri Kryesor')}
                 </NavLink>
               )}
             </div>
@@ -80,14 +86,14 @@ export const Layout: React.FC<LayoutProps> = ({ title, subtitle, children }) => 
 
           {can(['admin', 'accountant', 'auditor']) && (
             <div className="nav-group">
-              <div className="nav-group-label">Intelligence</div>
+              <div className="nav-group-label">{tr('Intelligence', 'Inteligjencë')}</div>
               <NavLink to="/ai" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                 <SparkleIcon />
-                AI Analyst
+                {tr('AI Analyst', 'Analisti AI')}
               </NavLink>
               <NavLink to="/compliance" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                 <CheckIcon />
-                Compliance
+                {tr('Compliance', 'Përputhshmëri')}
               </NavLink>
             </div>
           )}
@@ -96,34 +102,47 @@ export const Layout: React.FC<LayoutProps> = ({ title, subtitle, children }) => 
         <div className="sidebar-footer">
           <div className="sidebar-status">
             <div className="status-dot" />
-            <span>API · All systems operational</span>
+            <span>{tr('API · All systems operational', 'API · Të gjitha sistemet operative')}</span>
           </div>
         </div>
       </aside>
 
       {/* ── Main ────────────────────────────────── */}
-      <main className="main">
+      <main className={`main${contentFill ? ' main--fill-viewport' : ''}`}>
         <header className="topbar">
           <div className="topbar-left">
             <div className="page-title">{title}</div>
             {subtitle && <div className="page-subtitle">{subtitle}</div>}
           </div>
           <div className="topbar-right">
+            <select
+              className="select"
+              style={{ width: 90, height: 30 }}
+              value={lang}
+              onChange={(e) => setLanguage((e.target.value as 'en' | 'sq'))}
+            >
+              <option value="en">EN</option>
+              <option value="sq">SQ</option>
+            </select>
             {user?.role === 'admin' && (
               <button className="btn btn-secondary btn-sm" onClick={() => navigate('/platform/iam')}>
-                IAM
+                {tr('Dashboard', 'Paneli')}
               </button>
             )}
-            {user?.role && <span className="badge badge-slate">{user.role}</span>}
-            <button className="btn btn-secondary btn-sm" onClick={logout}>Logout</button>
+            {user?.role && (
+              <button className="btn btn-secondary btn-sm" onClick={() => navigate('/profile')}>
+                {tr('Profile', 'Profili')}
+              </button>
+            )}
+            <button className="btn btn-secondary btn-sm" onClick={logout}>{tr('Logout', 'Dil')}</button>
             <div className="topbar-badge">
               <div className="status-dot" style={{ width: 6, height: 6 }} />
-              Live — Kosovo Law 06/L-032
+              {tr('Live — Kosovo Law 06/L-032', 'Live — Ligji i Kosovës 06/L-032')}
             </div>
           </div>
         </header>
 
-        <div className="page-content">
+        <div className={`page-content${contentFill ? ' page-content--fill' : ''}`}>
           {children}
         </div>
       </main>

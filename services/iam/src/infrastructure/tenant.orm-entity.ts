@@ -11,6 +11,9 @@ export class TenantOrmEntity {
   @Column({ unique: true })
   slug!: string;
 
+  @Column({ type: 'varchar', length: 64, unique: true, nullable: true })
+  nui!: string | null;
+
   @Column({ type: 'boolean', default: true })
   active!: boolean;
 

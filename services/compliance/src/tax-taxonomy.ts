@@ -39,6 +39,8 @@ export interface ComplianceBundle {
   rules: ComplianceRule[];
 }
 
+export type ComplianceLang = 'en' | 'sq';
+
 export const KOSOVO_TAX_CATEGORIES: TaxCategory[] = [
   { id: 'VAT-00-NO', name: 'No VAT', rate: 0, description: 'No VAT (0%)', legalBasis: 'Law 06/L-032' },
   { id: 'VAT-00-BI', name: 'Blerjet dhe importet pa TVSH', rate: 0, description: 'Blerjet dhe importet pa TVSH (0%)', legalBasis: 'Law 06/L-032' },
@@ -153,3 +155,163 @@ export const COMPLIANCE_RULES: ComplianceRule[] = [
   { id: 'CR-008', context: 'gdpr',          rule: 'Personal data categories are processed only when strictly required by purpose.',description: 'Purpose limitation for operational accounting records.',                     enforcedSince: '2025-01-01' },
   { id: 'CR-009', context: 'accounting',    rule: 'Posting is allowed only on leaf (sub-category) accounts, not parent categories.', description: 'Prevents booking directly on aggregate main categories.',                 enforcedSince: '2025-01-01' },
 ];
+
+const TAX_CATEGORY_EN: Record<string, { name: string; description: string }> = {
+  'VAT-00-NO': { name: 'No VAT', description: 'No VAT (0%)' },
+  'VAT-00-BI': { name: 'Purchases and imports without VAT', description: 'Purchases and imports without VAT (0%)' },
+  'VAT-00-BII': { name: 'Investment purchases and imports without VAT', description: 'Investment purchases and imports without VAT (0%)' },
+  'VAT-00-BJZ': { name: 'Purchases and imports with non-deductible VAT', description: 'Purchases and imports with non-deductible VAT (0%)' },
+  'VAT-00-BIJZ': { name: 'Investment purchases and imports with non-deductible VAT', description: 'Investment purchases and imports with non-deductible VAT (0%)' },
+  'VAT-IMP-18': { name: 'Imports 18%', description: 'Imports 18% (18%)' },
+  'VAT-IMP-08': { name: 'Imports 8%', description: 'Imports 8% (8%)' },
+  'VAT-IMPI-18': { name: 'Investment imports 18%', description: 'Investment imports 18% (18%)' },
+  'VAT-IMPI-08': { name: 'Investment imports 8%', description: 'Investment imports 8% (8%)' },
+  '43': { name: 'Domestic purchases 18%', description: 'Domestic purchases 18% (18%)' },
+  '08': { name: 'Domestic purchases 8%', description: 'Domestic purchases 8% (8%)' },
+  'VAT-BIV-18': { name: 'Domestic investment purchases 18%', description: 'Domestic investment purchases 18% (18%)' },
+  'VAT-BIV-08': { name: 'Domestic investment purchases 8%', description: 'Domestic investment purchases 8% (8%)' },
+  'VAT-RC-CREDIT-18': { name: 'VAT input credit related to reverse charge 18%', description: 'VAT input credit related to reverse charge 18% (18%)' },
+  '28': { name: 'Purchases subject to reverse charge 18%', description: 'Purchases subject to reverse charge 18% (0%)' },
+};
+
+const ACCOUNT_EN: Record<string, { name: string; description: string }> = {
+  '100': { name: 'Cash and bank', description: 'Cash in hand and bank accounts' },
+  '650': { name: 'Accommodation', description: 'Accommodation expenses' },
+  '655': { name: 'Trade expenses', description: 'Trade expenses' },
+  '660': { name: 'Personnel expenses', description: 'Personnel expenses' },
+  '660-01': { name: 'Gross salaries', description: 'Gross salaries' },
+  '660-02': { name: 'Health insurance', description: 'Health insurance' },
+  '660-03': { name: 'Pension contribution', description: 'Pension contribution' },
+  '665': { name: 'Office expenses', description: 'Office expenses' },
+  '665-01': { name: 'Rent expenses', description: 'Rent expenses' },
+  '665-02': { name: 'Consumable materials', description: 'Consumable materials' },
+  '665-03': { name: 'Cleaning', description: 'Cleaning' },
+  '665-04': { name: 'Food and beverages', description: 'Food and beverages' },
+  '665-05': { name: 'IT expenses', description: 'IT expenses' },
+  '665-06': { name: 'Representation expenses', description: 'Representation expenses' },
+  '665-07': { name: 'Assets under 1000 EUR', description: 'Assets under 1000 EUR' },
+  '665-09': { name: 'Other', description: 'Other' },
+  '667': { name: 'Professional services', description: 'Professional services' },
+  '667-01': { name: 'Accounting services', description: 'Accounting services' },
+  '667-02': { name: 'Legal services', description: 'Legal services' },
+  '667-03': { name: 'Consulting services', description: 'Consulting services' },
+  '667-04': { name: 'Audit services', description: 'Audit services' },
+  '668': { name: 'Travel expenses', description: 'Travel expenses' },
+  '668-01': { name: 'Accommodation', description: 'Accommodation' },
+  '668-02': { name: 'Per diem', description: 'Per diem' },
+  '668-03': { name: 'Transport', description: 'Transport' },
+  '669': { name: 'Vehicle expenses', description: 'Vehicle expenses' },
+  '669-01': { name: 'Fuel expenses', description: 'Fuel expenses' },
+  '669-02': { name: 'Maintenance and repair', description: 'Maintenance and repair' },
+  '675': { name: 'Communication expenses', description: 'Communication expenses' },
+  '675-01': { name: 'Internet', description: 'Internet' },
+  '675-02': { name: 'Mobile phone', description: 'Mobile phone' },
+  '675-03': { name: 'Postal deliveries', description: 'Postal deliveries' },
+  '675-04': { name: 'Fixed line phone', description: 'Fixed line phone' },
+  '683': { name: 'Insurance expenses', description: 'Insurance expenses' },
+  '683-01': { name: 'Vehicle insurance', description: 'Vehicle insurance' },
+  '683-02': { name: 'Building insurance', description: 'Building insurance' },
+  '686': { name: 'Utilities', description: 'Utilities' },
+  '686-01': { name: 'Electricity', description: 'Electricity' },
+  '686-02': { name: 'Water supply', description: 'Water supply' },
+  '686-03': { name: 'Cleaning', description: 'Cleaning' },
+  '686-04': { name: 'Heating expenses', description: 'Heating expenses' },
+  '690': { name: 'Other operating expenses', description: 'Other operating expenses' },
+  '690-01': { name: 'Membership expenses', description: 'Membership expenses' },
+  '690-02': { name: 'Translation expenses', description: 'Translation expenses' },
+  '690-03': { name: 'Bank provision', description: 'Bank provision' },
+  '690-04': { name: 'Website maintenance', description: 'Website maintenance' },
+  '690-05': { name: 'Municipal taxes', description: 'Municipal taxes' },
+  '690-06': { name: 'Bank account maintenance', description: 'Bank account maintenance' },
+  '240': { name: 'Payroll liabilities', description: 'Payroll liabilities' },
+  '220': { name: 'Accounts payable to suppliers', description: 'Trade liabilities to suppliers' },
+  '240-01': { name: 'Net salary', description: 'Net salary' },
+  '240-02': { name: 'Pension contribution', description: 'Pension contribution' },
+  '240-03': { name: 'Personal income tax', description: 'Personal income tax' },
+  '240-04': { name: 'Health insurance', description: 'Health insurance' },
+  '250': { name: 'VAT payable', description: 'VAT payable' },
+  '256': { name: 'Reverse charge liability 18%', description: 'Reverse charge liability 18%' },
+  '280': { name: 'Loans from owner', description: 'Loans from owner' },
+  '290': { name: 'Import liabilities', description: 'Import liabilities' },
+  '290-01': { name: 'Transport', description: 'Transport' },
+  '290-02': { name: 'Customs', description: 'Customs' },
+  '290-03': { name: 'Import VAT', description: 'Import VAT' },
+  '125': { name: 'Inventory', description: 'Inventory' },
+  '140': { name: 'Accounts receivable from customers', description: 'Customer receivables from credit sales' },
+  '130': { name: 'Prepayments', description: 'Prepayments' },
+  '130-01': { name: 'Supplier prepayments', description: 'Supplier prepayments' },
+  '130-02': { name: 'Employee prepayments', description: 'Employee prepayments' },
+  '132': { name: 'Deductible VAT', description: 'Deductible VAT' },
+  '135': { name: 'Other assets', description: 'Other assets' },
+  '150': { name: 'Office equipment and furniture', description: 'Office equipment and furniture' },
+  '150-01': { name: 'Cost', description: 'Cost' },
+  '150-02': { name: 'Accumulated depreciation', description: 'Accumulated depreciation' },
+  '155': { name: 'Vehicles', description: 'Vehicles' },
+  '155-01': { name: 'Cost', description: 'Cost' },
+  '155-02': { name: 'Accumulated depreciation', description: 'Accumulated depreciation' },
+  '156': { name: 'Work equipment', description: 'Work equipment' },
+  '156-01': { name: 'Cost', description: 'Cost' },
+  '156-02': { name: 'Accumulated depreciation', description: 'Accumulated depreciation' },
+  '300': { name: 'Opening balance setup', description: 'Opening balance setup' },
+  '310': { name: 'Owner capital', description: 'Owner capital' },
+  '320': { name: 'Retained earnings', description: 'Retained earnings' },
+  '700': { name: 'Sales revenue', description: 'Operating revenue from sales of goods and services' },
+  '500': { name: 'Cost of goods sold', description: 'Cost of goods sold' },
+};
+
+const RULE_SQ: Record<string, { rule: string; description: string }> = {
+  'CR-001': {
+    rule: 'Çdo rresht i faturës duhet të referojë një nga kategoritë e konfiguruara të TVSH-së në Kosovë (duke përfshirë 0%, 8%, 18%, import, investime dhe ngarkesë të kundërt).',
+    description: 'Faturat nuk mund të postohen nëse të gjithë rreshtat nuk kanë kategori të njohur TVSH-je nga taksonomia e përputhshmërisë.',
+  },
+  'CR-002': {
+    rule: 'Çdo regjistrim kontabël duhet të plotësojë: shuma(debit) === shuma(kredit).',
+    description: 'Invarianti i kontabilitetit me hyrje të dyfishtë.',
+  },
+  'CR-003': {
+    rule: 'Storno lejohet vetëm për fatura të postuara (POSTED).',
+    description: 'Parandalon kthimin e dyfishtë.',
+  },
+  'CR-004': {
+    rule: 'Statusi i invoice: DRAFT → SENT → PAID, dhe kthimi vetëm nga SENT ose PAID.',
+    description: 'Cikli i invoice nuk mund të kapërcejë gjendjet.',
+  },
+  'CR-005': {
+    rule: 'Dokumentet e biznesit në Kosovë regjistrohen në EUR me data valide të lëshimit/skadencës dhe kategori TVSH-je që përputhen me kontekstin vendor/import/ngarkesë e kundërt.',
+    description: 'Konsistencë e valutës, afateve dhe kontekstit të TVSH-së për raportimin në Kosovë.',
+  },
+  'CR-006': {
+    rule: 'Rreshtat e invoice/faturës duhet të kenë sasi > 0 dhe çmim për njësi >= 0.',
+    description: 'Parandalon llogaritje matematikisht të pavlefshme të bazës tatimore.',
+  },
+  'CR-007': {
+    rule: 'Fushat e lira të biznesit nuk duhet të përfshijnë të dhëna personale të panevojshme.',
+    description: 'Minimizimi i të dhënave: bllokon email/telefon/ID personale në përshkrime/shënime.',
+  },
+  'CR-008': {
+    rule: 'Kategoritë e të dhënave personale përpunohen vetëm kur janë rreptësisht të nevojshme për qëllimin.',
+    description: 'Kufizimi i qëllimit për regjistrat operacionalë kontabël.',
+  },
+  'CR-009': {
+    rule: 'Postimi lejohet vetëm në llogari fundore (nën-kategori), jo në kategori prindërore.',
+    description: 'Parandalon regjistrimin direkt në kategori kryesore agregate.',
+  },
+};
+
+export const localizeTaxCategory = (t: TaxCategory, lang: ComplianceLang): TaxCategory => {
+  if (lang !== 'en') return t;
+  const tr = TAX_CATEGORY_EN[t.id];
+  return tr ? { ...t, name: tr.name, description: tr.description } : t;
+};
+
+export const localizeAccount = (a: AccountCode, lang: ComplianceLang): AccountCode => {
+  if (lang !== 'en') return a;
+  const tr = ACCOUNT_EN[a.code];
+  return tr ? { ...a, name: tr.name, description: tr.description } : a;
+};
+
+export const localizeRule = (r: ComplianceRule, lang: ComplianceLang): ComplianceRule => {
+  if (lang !== 'sq') return r;
+  const tr = RULE_SQ[r.id];
+  return tr ? { ...r, rule: tr.rule, description: tr.description } : r;
+};

@@ -178,6 +178,14 @@ services:
       IAM_DB_PASSWORD: localdev
       IAM_DB_NAME: guri_iam
       JWT_SECRET: guri-finance-jwt-secret-2026
+      # SMTP for email verification (set these in root .env)
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-no-reply@guri.local}
+      # Shared with Operations for NUI → tenant lookup (cross-tenant incoming bills)
+      IAM_OPS_SHARED_SECRET: ${IAM_OPS_SHARED_SECRET:-guri-internal-nui-lookup}
     ports:
       - "3001:3001"
     depends_on:
@@ -209,11 +217,15 @@ services:
       COMPLIANCE_SERVICE_URL: http://compliance:3002
       LEDGER_SERVICE_URL: http://ledger:3004
       AI_SERVICE_URL: http://ai:3005
+      IAM_SERVICE_URL: http://iam:3001
+      IAM_OPS_SHARED_SECRET: ${IAM_OPS_SHARED_SECRET:-guri-internal-nui-lookup}
       KAFKA_BROKERS: kafka:9092
       KAFKA_TOPIC_OPERATIONS_EVENTS: operations.events
     ports:
       - "3003:3003"
     depends_on:
+      iam:
+        condition: service_healthy
       ops-postgres:
         condition: service_healthy
       compliance:
@@ -300,7 +312,7 @@ services:
       kafka:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3005/api/v1/ai/snapshot || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3005/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

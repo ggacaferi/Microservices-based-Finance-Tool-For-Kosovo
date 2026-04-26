@@ -37,6 +37,7 @@ export class UserRepository {
         tenantId: user.tenantId,
         role: user.role,
         active: user.active,
+        mustChangePassword: user.mustChangePassword,
       });
     }
   }
@@ -86,6 +87,7 @@ export class UserRepository {
       row.tenantId,
       row.role as UserRole,
       row.active,
+      Boolean(row.mustChangePassword),
       row.createdAt.toISOString(),
     );
     this.memStore.set(user.id, user);

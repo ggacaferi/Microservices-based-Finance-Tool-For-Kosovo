@@ -8,18 +8,20 @@ export interface CreateUserProps {
   fullName: string;
   tenantId: string;
   role?: UserRole;
+  mustChangePassword?: boolean;
 }
 
 export class User {
   readonly id: string;
-  readonly email: string;
+  private _email: string;
   readonly tenantId: string;
-  readonly fullName: string;
+  private _fullName: string;
   readonly role: UserRole;
   readonly createdAt: string;
 
   private _passwordHash: string;
   private _active: boolean;
+  private _mustChangePassword: boolean;
 
   private constructor(
     id: string,
@@ -29,15 +31,17 @@ export class User {
     tenantId: string,
     role: UserRole,
     active: boolean,
+    mustChangePassword: boolean,
     createdAt: string,
   ) {
     this.id = id;
-    this.email = email;
+    this._email = email;
     this._passwordHash = passwordHash;
-    this.fullName = fullName;
+    this._fullName = fullName;
     this.tenantId = tenantId;
     this.role = role;
     this._active = active;
+    this._mustChangePassword = mustChangePassword;
     this.createdAt = createdAt;
   }
 
@@ -66,6 +70,7 @@ export class User {
       props.tenantId.trim(),
       props.role ?? 'data_clerk',
       true,
+      props.mustChangePassword ?? false,
       new Date().toISOString(),
     );
   }
@@ -78,22 +83,56 @@ export class User {
     tenantId: string,
     role: UserRole,
     active: boolean,
+    mustChangePassword: boolean,
     createdAt: string,
   ): User {
-    return new User(id, email, passwordHash, fullName, tenantId, role, active, createdAt);
+    return new User(id, email, passwordHash, fullName, tenantId, role, active, mustChangePassword, createdAt);
   }
 
   get passwordHash(): string {
     return this._passwordHash;
   }
 
+  get email(): string {
+    return this._email;
+  }
+
+  get fullName(): string {
+    return this._fullName;
+  }
+
   get active(): boolean {
     return this._active;
+  }
+
+  get mustChangePassword(): boolean {
+    return this._mustChangePassword;
   }
 
   verifyPassword(plaintext: string): boolean {
     const hash = Buffer.from(plaintext).toString('base64');
     return this._passwordHash === hash;
+  }
+
+  setPassword(newPassword: string): void {
+    if (!newPassword || newPassword.length < 6) {
+      throw new Error('Password must be at least 6 characters.');
+    }
+    this._passwordHash = Buffer.from(newPassword).toString('base64');
+    this._mustChangePassword = false;
+  }
+
+  updateProfile(input: { fullName?: string; email?: string }): void {
+    if (input.fullName !== undefined) {
+      const n = input.fullName.trim();
+      if (!n) throw new Error('Full name is required.');
+      this._fullName = n;
+    }
+    if (input.email !== undefined) {
+      const e = input.email.toLowerCase().trim();
+      if (!e.includes('@')) throw new Error('A valid email is required.');
+      this._email = e;
+    }
   }
 
   deactivate(): void {

@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { getLanguage } from '../language';
+import { useLanguage } from '../useLanguage';
 
 const accountTypeBadge: Record<string, string> = {
   ASSET: 'badge-green', LIABILITY: 'badge-red', EQUITY: 'badge-blue',
@@ -7,6 +9,8 @@ const accountTypeBadge: Record<string, string> = {
 };
 
 export const CompliancePage: React.FC = () => {
+  const lang = useLanguage();
+  const tr = (en: string, sq: string) => (lang === 'en' ? en : sq);
   const [summary, setSummary] = useState<any>(null);
   const [taxCategories, setTaxCategories] = useState<any[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
@@ -15,13 +19,26 @@ export const CompliancePage: React.FC = () => {
   const [ruleFilter, setRuleFilter] = useState('');
   const [refreshing, setRefreshing] = useState(false);
 
+  const api = axios.create({ baseURL: '/api/v1' });
+  api.interceptors.request.use((config) => {
+    const token = localStorage.getItem('guri_token');
+    const rawUser = localStorage.getItem('guri_user');
+    let tenantId: string | undefined;
+    try { tenantId = rawUser ? JSON.parse(rawUser)?.tenantId : undefined; } catch {}
+    config.headers = config.headers || {};
+    if (token) (config.headers as any).Authorization = `Bearer ${token}`;
+    if (tenantId) (config.headers as any)['x-tenant-id'] = tenantId;
+    (config.headers as any)['x-lang'] = getLanguage();
+    return config;
+  });
+
   const loadAll = async () => {
     try {
       const [s, t, a, r] = await Promise.all([
-        axios.get('/api/v1/compliance/summary'),
-        axios.get('/api/v1/compliance/tax-categories'),
-        axios.get('/api/v1/compliance/chart-of-accounts'),
-        axios.get('/api/v1/compliance/rules'),
+        api.get('/compliance/summary'),
+        api.get('/compliance/tax-categories'),
+        api.get('/compliance/chart-of-accounts'),
+        api.get('/compliance/rules'),
       ]);
       setSummary(s.data);
       setTaxCategories(t.data);
@@ -33,13 +50,13 @@ export const CompliancePage: React.FC = () => {
   const refreshCache = async () => {
     setRefreshing(true);
     try {
-      await axios.post('/api/v1/compliance/refresh');
+      await api.post('/compliance/refresh');
       await loadAll();
     } catch { /* ignore */ }
     finally { setRefreshing(false); }
   };
 
-  useEffect(() => { loadAll(); }, []);
+  useEffect(() => { loadAll(); }, [lang]);
 
   const filteredAccounts = accountFilter ? accounts.filter(a => a.type === accountFilter) : accounts;
   const filteredRules    = ruleFilter    ? rules.filter(r => r.context === ruleFilter)    : rules;
@@ -51,10 +68,10 @@ export const CompliancePage: React.FC = () => {
       {summary && (
         <div className="grid-auto">
           {[
-            { label: 'Tax Categories', value: summary.taxCategoryCount, color: '#2563eb', bg: '#eff6ff' },
-            { label: 'SKA Accounts',   value: summary.accountCount,      color: '#16a34a', bg: '#f0fdf4' },
-            { label: 'Active Rules',   value: summary.ruleCount,         color: '#d97706', bg: '#fffbeb' },
-            { label: 'Law Version',    value: `v${summary.version}`,     color: '#7c3aed', bg: '#f5f3ff' },
+            { label: tr('Tax Categories', 'Kategoritë Tatimore'), value: summary.taxCategoryCount, color: '#2563eb', bg: '#eff6ff' },
+            { label: tr('SKA Accounts', 'Llogaritë SKA'), value: summary.accountCount, color: '#16a34a', bg: '#f0fdf4' },
+            { label: tr('Active Rules', 'Rregulla Aktive'), value: summary.ruleCount, color: '#d97706', bg: '#fffbeb' },
+            { label: tr('Law Version', 'Versioni Ligjor'), value: `v${summary.version}`, color: '#7c3aed', bg: '#f5f3ff' },
           ].map(s => (
             <div key={s.label} className="stat-card">
               <div className="stat-label">{s.label}</div>
@@ -69,20 +86,20 @@ export const CompliancePage: React.FC = () => {
         <div className="card">
           <div className="card-header">
             <div>
-              <div className="card-title">Kosovo VAT Categories</div>
-              <div className="card-subtitle">TAK-administered rates — Law 06/L-032</div>
+              <div className="card-title">{tr('Kosovo VAT Categories', 'Kategoritë e TVSH-së në Kosovë')}</div>
+              <div className="card-subtitle">{tr('TAK-administered rates — Law 06/L-032', 'Norma të administruara nga ATK — Ligji 06/L-032')}</div>
             </div>
             <button className="btn btn-secondary btn-sm" onClick={refreshCache} disabled={refreshing}>
-              {refreshing ? '…' : '↻ Refresh Cache'}
+              {refreshing ? '…' : tr('↻ Refresh Cache', '↻ Rifresko Cache')}
             </button>
           </div>
           <table className="erp-table">
             <thead>
               <tr>
-                <th>Code</th>
-                <th>Category Name</th>
-                <th className="text-right">Rate</th>
-                <th>Legal Basis</th>
+                <th>{tr('Code', 'Kodi')}</th>
+                <th>{tr('Category Name', 'Emri i Kategorisë')}</th>
+                <th className="text-right">{tr('Rate', 'Norma')}</th>
+                <th>{tr('Legal Basis', 'Baza Ligjore')}</th>
               </tr>
             </thead>
             <tbody>
@@ -105,14 +122,14 @@ export const CompliancePage: React.FC = () => {
         <div className="card">
           <div className="card-header">
             <div>
-              <div className="card-title">Compliance Rules</div>
-              <div className="card-subtitle">Enforced across all bounded contexts</div>
+              <div className="card-title">{tr('Compliance Rules', 'Rregullat e Përputhshmërisë')}</div>
+              <div className="card-subtitle">{tr('Enforced across all bounded contexts', 'Zbatohen në të gjitha kontekstet')}</div>
             </div>
             <select className="select" style={{ width: 140 }} value={ruleFilter} onChange={e => setRuleFilter(e.target.value)}>
-              <option value="">All Contexts</option>
-              <option value="bill">Bills</option>
-              <option value="invoice">Invoices</option>
-              <option value="journal_entry">Journal Entries</option>
+              <option value="">{tr('All Contexts', 'Të gjitha kontekstet')}</option>
+              <option value="bill">{tr('Bills', 'Faturat')}</option>
+              <option value="invoice">{tr('Invoices', 'Invoice-t')}</option>
+              <option value="journal_entry">{tr('Journal Entries', 'Regjistrimet')}</option>
             </select>
           </div>
           <div className="card-body stack">
@@ -134,24 +151,24 @@ export const CompliancePage: React.FC = () => {
       <div className="card">
         <div className="card-header">
           <div>
-            <div className="card-title">Standard Chart of Accounts (SKA)</div>
-            <div className="card-subtitle">Kosovo accounting structure — {filteredAccounts.length} accounts</div>
+            <div className="card-title">{tr('Standard Chart of Accounts (SKA)', 'Plani Standard i Llogarive (SKA)')}</div>
+            <div className="card-subtitle">{tr('Kosovo accounting structure', 'Struktura kontabël e Kosovës')} — {filteredAccounts.length} {tr('accounts', 'llogari')}</div>
           </div>
           <select className="select" style={{ width: 150 }} value={accountFilter} onChange={e => setAccountFilter(e.target.value)}>
-            <option value="">All Account Types</option>
-            <option value="ASSET">Assets</option>
-            <option value="LIABILITY">Liabilities</option>
-            <option value="EQUITY">Equity</option>
-            <option value="REVENUE">Revenue</option>
-            <option value="EXPENSE">Expenses</option>
+            <option value="">{tr('All Account Types', 'Të gjitha llojet')}</option>
+            <option value="ASSET">{tr('Assets', 'Asete')}</option>
+            <option value="LIABILITY">{tr('Liabilities', 'Detyrime')}</option>
+            <option value="EQUITY">{tr('Equity', 'Kapital')}</option>
+            <option value="REVENUE">{tr('Revenue', 'Të ardhura')}</option>
+            <option value="EXPENSE">{tr('Expenses', 'Shpenzime')}</option>
           </select>
         </div>
         <table className="erp-table">
           <thead>
             <tr>
-              <th>Code</th>
-              <th>Account Name</th>
-              <th>Type</th>
+              <th>{tr('Code', 'Kodi')}</th>
+              <th>{tr('Account Name', 'Emri i Llogarisë')}</th>
+              <th>{tr('Type', 'Lloji')}</th>
             </tr>
           </thead>
           <tbody>

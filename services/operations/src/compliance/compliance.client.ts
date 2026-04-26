@@ -114,8 +114,45 @@ export class ComplianceClient implements OnModuleInit {
       }
     } catch (err: any) {
       if (String(err?.message || '').includes('Compliance validation failed')) throw err;
-      // If compliance endpoint is unreachable, fail closed for strict enforcement
-      throw new Error(`Compliance Service unavailable for mandatory validation: ${err.message}`);
+      // Fallback: validate against locally cached bundle to avoid Ops downtime.
+      this.logger.warn(`Compliance validate endpoint unavailable (${err.message}). Falling back to cached bundle checks (v${this.bundleVersion}).`);
+      this.validateLocallyOrThrow(context, payload);
+    }
+  }
+
+  private validateLocallyOrThrow(context: 'bill' | 'invoice' | 'inventory', payload: any): void {
+    const violations: string[] = [];
+    const add = (code: string, field: string, message: string) => violations.push(`${code}(${field}): ${message}`);
+
+    if (context === 'bill') {
+      const lines = payload?.lineItems || payload?.lines || [];
+      if (!Array.isArray(lines) || lines.length === 0) add('KOS-VAL-004', 'lineItems', 'At least one line item is required.');
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        if (!this.isValidTaxId(String(l?.taxCategoryId || ''))) add('KOS-VAT-001', `lineItems[${i}].taxCategoryId`, 'Invalid Kosovo VAT category id.');
+        if (Number(l?.quantity) <= 0) add('KOS-MATH-001', `lineItems[${i}].quantity`, 'Quantity must be greater than zero.');
+        if (Number(l?.unitPrice) < 0) add('KOS-MATH-002', `lineItems[${i}].unitPrice`, 'Unit price cannot be negative.');
+        if (l?.accountCode && !this.isValidAccountCode(String(l.accountCode))) add('KOS-ACC-001', `lineItems[${i}].accountCode`, 'Invalid account code.');
+      }
+    }
+
+    if (context === 'invoice') {
+      const lines = payload?.lines || [];
+      if (!Array.isArray(lines) || lines.length === 0) add('KOS-VAL-004', 'lines', 'At least one line is required.');
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        if (Number(l?.quantity) <= 0) add('KOS-MATH-001', `lines[${i}].quantity`, 'Quantity must be greater than zero.');
+        if (Number(l?.unitPrice) < 0) add('KOS-MATH-002', `lines[${i}].unitPrice`, 'Unit price cannot be negative.');
+      }
+    }
+
+    if (context === 'inventory') {
+      if (Number(payload?.quantity) <= 0) add('KOS-MATH-001', 'quantity', 'Quantity must be greater than zero.');
+      if (payload?.unitCost !== undefined && Number(payload.unitCost) < 0) add('KOS-MATH-003', 'unitCost', 'Unit cost cannot be negative.');
+    }
+
+    if (violations.length > 0) {
+      throw new Error(`Compliance validation failed: ${violations.join(' | ')}`);
     }
   }
 }

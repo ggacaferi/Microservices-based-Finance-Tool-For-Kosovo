@@ -1,6 +1,6 @@
-import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, NotFoundException, Param, Patch, Post, Query, Req, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { AuthService } from '../application/auth.service';
-import { RegisterTenantDto, LoginDto, CreateUserDto } from '../application/dto/auth.dto';
+import { RegisterTenantDto, LoginDto, CreateUserDto, VerifyRegistrationDto, RequestPasswordResetDto, VerifyPasswordResetDto, ChangePasswordDto, UpdateBusinessDto, UpdateProfileDto } from '../application/dto/auth.dto';
 import { Public, Roles, JwtAuthGuard, RolesGuard } from '../guards/auth.guard';
 
 @Controller('iam')
@@ -13,7 +13,31 @@ export class IamController {
   @Public()
   @Post('register')
   register(@Body() dto: RegisterTenantDto) {
-    return this.authService.registerTenant(dto.tenantName, dto.email, dto.password, dto.fullName);
+    return this.authService.requestRegistrationCode(dto.tenantName, dto.nui, dto.email, dto.password, dto.fullName);
+  }
+
+  @Public()
+  @Post('register/request-code')
+  requestCode(@Body() dto: RegisterTenantDto) {
+    return this.authService.requestRegistrationCode(dto.tenantName, dto.nui, dto.email, dto.password, dto.fullName);
+  }
+
+  @Public()
+  @Post('register/verify-code')
+  verifyCode(@Body() dto: VerifyRegistrationDto) {
+    return this.authService.verifyRegistrationCode(dto.email, dto.code);
+  }
+
+  @Public()
+  @Post('forgot-password/request-code')
+  forgotPasswordRequest(@Body() dto: RequestPasswordResetDto) {
+    return this.authService.requestPasswordResetCode(dto.email);
+  }
+
+  @Public()
+  @Post('forgot-password/verify-code')
+  forgotPasswordVerify(@Body() dto: VerifyPasswordResetDto) {
+    return this.authService.verifyPasswordResetCode(dto.email, dto.code, dto.newPassword);
   }
 
   /**
@@ -34,6 +58,11 @@ export class IamController {
     return this.authService.createUser(req.user.sub, dto.email, dto.password, dto.fullName, dto.role);
   }
 
+  @Post('change-password')
+  changePassword(@Req() req: any, @Body() dto: ChangePasswordDto) {
+    return this.authService.changePassword(req.user.sub, dto.currentPassword, dto.newPassword);
+  }
+
   /**
    * GET /api/v1/iam/users — List users in the caller's tenant
    */
@@ -48,21 +77,91 @@ export class IamController {
    */
   @Get('tenants')
   @Roles('admin')
-  listTenants() {
-    return this.authService.listTenants();
+  listTenants(@Req() req: any) {
+    return this.authService.listTenants(req.user.tenantId);
   }
 
   /**
-   * GET /api/v1/iam/me — Return current user from JWT
+   * GET /api/v1/iam/me — Return current user profile, including fullName and tenant NUI
    */
   @Get('me')
-  me(@Req() req: any) {
+  async me(@Req() req: any) {
+    const [profile, nui] = await Promise.all([
+      this.authService.getMyProfile(req.user.sub),
+      this.authService.resolveNuiByTenantId(req.user.tenantId),
+    ]);
     return {
       id: req.user.sub,
-      email: req.user.email,
+      email: profile?.email ?? req.user.email,
+      fullName: profile?.fullName ?? '',
       tenantId: req.user.tenantId,
       role: req.user.role,
+      mustChangePassword: req.user.mustChangePassword,
+      nui: nui ?? null,
     };
+  }
+
+  @Patch('me')
+  updateMe(@Req() req: any, @Body() dto: UpdateProfileDto) {
+    return this.authService.updateMyProfile(req.user.sub, dto);
+  }
+
+  @Patch('business')
+  @Roles('admin')
+  updateBusiness(@Req() req: any, @Body() dto: UpdateBusinessDto) {
+    return this.authService.updateBusinessProfile(req.user.sub, dto);
+  }
+
+  /**
+   * GET /api/v1/iam/internal/tenant-by-nui/:nui — Service-to-service: map business NUI → tenant id.
+   * Requires header x-operations-secret matching IAM_OPS_SHARED_SECRET.
+   */
+  @Public()
+  @Get('internal/tenant-by-nui/:nui')
+  async tenantByNui(@Param('nui') nui: string, @Headers('x-operations-secret') secret?: string) {
+    const fromEnv = process.env.IAM_OPS_SHARED_SECRET?.trim();
+    const expected =
+      fromEnv || (process.env.NODE_ENV !== 'production' ? 'guri-internal-nui-lookup' : '');
+    if (!expected || secret !== expected) {
+      throw new UnauthorizedException('Invalid or missing service authentication.');
+    }
+    const tenantId = await this.authService.resolveTenantIdByNui(decodeURIComponent(nui));
+    if (!tenantId) throw new NotFoundException('No tenant registered for this NUI.');
+    return { tenantId };
+  }
+
+  /**
+   * GET /api/v1/iam/internal/tenant-nui-by-id/:tenantId — Service-to-service: map tenant id → NUI.
+   * Requires header x-operations-secret matching IAM_OPS_SHARED_SECRET.
+   */
+  @Public()
+  @Get('internal/tenant-nui-by-id/:tenantId')
+  async tenantNuiById(@Param('tenantId') tenantId: string, @Headers('x-operations-secret') secret?: string) {
+    const fromEnv = process.env.IAM_OPS_SHARED_SECRET?.trim();
+    const expected =
+      fromEnv || (process.env.NODE_ENV !== 'production' ? 'guri-internal-nui-lookup' : '');
+    if (!expected || secret !== expected) {
+      throw new UnauthorizedException('Invalid or missing service authentication.');
+    }
+    const nui = await this.authService.resolveNuiByTenantId(decodeURIComponent(tenantId));
+    return { nui: nui ?? null };
+  }
+
+  /**
+   * GET /api/v1/iam/internal/tenant-label/:tenantId — Service-to-service: company name + NUI for EDI display.
+   */
+  @Public()
+  @Get('internal/tenant-label/:tenantId')
+  async tenantLabel(@Param('tenantId') tenantId: string, @Headers('x-operations-secret') secret?: string) {
+    const fromEnv = process.env.IAM_OPS_SHARED_SECRET?.trim();
+    const expected =
+      fromEnv || (process.env.NODE_ENV !== 'production' ? 'guri-internal-nui-lookup' : '');
+    if (!expected || secret !== expected) {
+      throw new UnauthorizedException('Invalid or missing service authentication.');
+    }
+    const label = await this.authService.resolveTenantLabelForOperations(decodeURIComponent(tenantId));
+    if (!label) throw new NotFoundException('Tenant not found.');
+    return label;
   }
 
   /**
@@ -80,7 +179,7 @@ export class IamController {
    */
   @Get('audit')
   @Roles('admin')
-  audit(@Query('limit') limit?: string) {
-    return this.authService.getAuditLog(limit ? Number(limit) : 50);
+  audit(@Req() req: any, @Query('limit') limit?: string) {
+    return this.authService.getAuditLog(req.user.tenantId, limit ? Number(limit) : 50);
   }
 }

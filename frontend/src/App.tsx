@@ -6,6 +6,7 @@ import { CompliancePage } from './pages/CompliancePage';
 import { LedgerPage } from './pages/LedgerPage';
 import { AiPage } from './pages/AiPage';
 import { IamPage } from './pages/IamPage';
+import { useLanguage } from './useLanguage';
 
 type UserRole = 'admin' | 'accountant' | 'data_clerk' | 'auditor';
 
@@ -47,6 +48,8 @@ const Protected: React.FC<{ allowed: UserRole[]; children: React.ReactNode }> = 
 };
 
 const App: React.FC = () => {
+  const lang = useLanguage();
+  const tr = (en: string, sq: string) => (lang === 'en' ? en : sq);
   return (
     <Routes>
       <Route
@@ -59,8 +62,8 @@ const App: React.FC = () => {
         element={
           <Protected allowed={['admin', 'accountant', 'data_clerk']}>
             <Layout
-              title="Daily Operations · Bills & Invoices"
-              subtitle="Capture business intent (Fatura Dalëse/Hyrëse, Shpenzime, Inventory) before it flows into the Ledger."
+              title={tr('Daily Operations · Bills & Invoices', 'Operacionet Ditore · Faturat & Invoice-t')}
+              subtitle={tr('Capture business intent (Fatura Dalëse/Hyrëse, Shpenzime, Inventory) before it flows into the Ledger.', 'Regjistro faturat, shpenzimet dhe inventarin para se të rrjedhin në Librin Kryesor.')}
             >
               <DailyOpsPage />
             </Layout>
@@ -72,8 +75,8 @@ const App: React.FC = () => {
         element={
           <Protected allowed={['admin', 'accountant', 'auditor']}>
             <Layout
-              title="Compliance Engine"
-              subtitle="Kosovo Law 06/L-032 encoded as rules and taxonomies, consumed by all bounded contexts."
+              title={tr('Compliance Engine', 'Motori i Përputhshmërisë')}
+              subtitle={tr('Kosovo Law 06/L-032 encoded as rules and taxonomies, consumed by all bounded contexts.', 'Ligji i Kosovës 06/L-032 i koduar si rregulla dhe taksonomi, i përdorur nga të gjitha kontekstet.')}
             >
               <CompliancePage />
             </Layout>
@@ -85,8 +88,8 @@ const App: React.FC = () => {
         element={
           <Protected allowed={['admin', 'accountant', 'auditor']}>
             <Layout
-              title="General Ledger"
-              subtitle="Financial truth built from journal entries emitted by operational contexts."
+              title={tr('General Ledger', 'Libri Kryesor')}
+              subtitle={tr('Financial truth built from journal entries emitted by operational contexts.', 'E vërteta financiare e ndërtuar nga regjistrimet kontabël të operacioneve.')}
             >
               <LedgerPage />
             </Layout>
@@ -98,8 +101,8 @@ const App: React.FC = () => {
         element={
           <Protected allowed={['admin', 'accountant', 'auditor']}>
             <Layout
-              title="AI Analyst"
-              subtitle="RAG interface for natural language questions over compliant financial snapshots."
+              title={tr('AI Financial Analyst', 'Analisti Financiar AI')}
+              contentFill
             >
               <AiPage />
             </Layout>
@@ -111,8 +114,21 @@ const App: React.FC = () => {
         element={
           <Protected allowed={['admin']}>
             <Layout
-              title="Identity & Access Management"
-              subtitle="Central gatekeeper for tenants, users, and permissions."
+              title={tr('Identity & Access Management', 'Menaxhimi i Identitetit dhe Qasjes')}
+              subtitle={tr('Central gatekeeper for tenants, users, and permissions.', 'Pika qendrore për tenantët, përdoruesit dhe lejet.')}
+            >
+              <IamPage />
+            </Layout>
+          </Protected>
+        }
+      />
+      <Route
+        path="/profile"
+        element={
+          <Protected allowed={['admin', 'accountant', 'data_clerk', 'auditor']}>
+            <Layout
+              title={tr('Profile', 'Profili')}
+              subtitle={tr('Manage your personal and company information.', 'Menaxhoni informacionin tuaj personal dhe të kompanisë.')}
             >
               <IamPage />
             </Layout>
