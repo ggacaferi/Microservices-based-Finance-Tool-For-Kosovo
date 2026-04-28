@@ -6,38 +6,18 @@ import { useLanguage } from '../useLanguage';
 interface LayoutProps {
   title: string;
   subtitle?: string;
-  /** Main content grows to fill viewport below the topbar (for full-page tools). */
   contentFill?: boolean;
   children: React.ReactNode;
 }
 
-const ShieldIcon = () => (
-  <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-  </svg>
-);
-const CheckIcon = () => (
-  <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z"/>
-  </svg>
-);
-const BriefcaseIcon = () => (
-  <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
-    <rect x="2" y="7" width="20" height="14" rx="2"/>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/>
-    <line x1="12" y1="12" x2="12" y2="12"/>
-  </svg>
-);
-const BookIcon = () => (
-  <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
-  </svg>
-);
-const SparkleIcon = () => (
-  <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M5 3l1.5 4.5L11 9l-4.5 1.5L5 15l-1.5-4.5L-1 9l4.5-1.5L5 3zM19 11l1 3 3 1-3 1-1 3-1-3-3-1 3-1 1-3z"/>
-  </svg>
-);
+const navCls = (active: boolean) =>
+  [
+    "flex items-center gap-3 rounded px-3 py-2 font-['Public_Sans'] text-sm font-medium transition-all duration-200 ease-in-out",
+    active
+      ? 'border-l-4 border-[#102A43] bg-white text-[#102A43] shadow-sm'
+      : 'text-slate-600 hover:bg-slate-100 hover:text-[#102A43]',
+  ].join(' ');
+
 export const Layout: React.FC<LayoutProps> = ({ title, subtitle, contentFill, children }) => {
   const navigate = useNavigate();
   const lang = useLanguage();
@@ -45,7 +25,8 @@ export const Layout: React.FC<LayoutProps> = ({ title, subtitle, contentFill, ch
   const raw = localStorage.getItem('guri_user');
   const user = raw ? JSON.parse(raw) : null;
   const role = user?.role as 'admin' | 'accountant' | 'data_clerk' | 'auditor' | undefined;
-  const can = (roles: Array<'admin' | 'accountant' | 'data_clerk' | 'auditor'>) => Boolean(role && roles.includes(role));
+  const can = (roles: Array<'admin' | 'accountant' | 'data_clerk' | 'auditor'>) =>
+    Boolean(role && roles.includes(role));
 
   const logout = () => {
     localStorage.removeItem('guri_token');
@@ -55,94 +36,112 @@ export const Layout: React.FC<LayoutProps> = ({ title, subtitle, contentFill, ch
 
   return (
     <div className="app-shell">
-      {/* ── Sidebar ─────────────────────────────── */}
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          <div className="sidebar-logo">G</div>
-          <div className="sidebar-brand-text">
-            <div className="sidebar-brand-name">Guri Finance</div>
-            <div className="sidebar-brand-sub">Kosovo ERP Platform</div>
+      <aside className="fixed inset-y-0 left-0 z-50 flex h-screen w-64 flex-col border-r border-slate-200 bg-[#F8FAFC] py-4">
+        <div className="mb-8 min-w-0 px-6">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-primary-container font-bold text-on-primary">
+              G
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="break-words text-xl font-black tracking-tighter text-[#102A43]">
+                {tr('Guri Finance', 'Guri Finance')}
+              </div>
+              <div className="break-words font-label-caps text-label-caps text-slate-500">
+                {tr('Kosovo ERP Platform', 'Platforma ERP e Kosovës')}
+              </div>
+            </div>
           </div>
         </div>
 
-        <nav className="sidebar-nav">
-          {(can(['admin', 'accountant', 'data_clerk']) || can(['admin', 'accountant', 'auditor'])) && (
-            <div className="nav-group">
-              <div className="nav-group-label">{tr('Accounting', 'Kontabilitet')}</div>
-              {can(['admin', 'accountant', 'data_clerk']) && (
-                <NavLink to="/daily-ops" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                  <BriefcaseIcon />
-                  {tr('Daily Operations', 'Operacionet Ditore')}
-                </NavLink>
-              )}
-              {can(['admin', 'accountant', 'auditor']) && (
-                <NavLink to="/ledger" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                  <BookIcon />
-                  {tr('General Ledger', 'Libri Kryesor')}
-                </NavLink>
-              )}
-            </div>
-          )}
-
-          {can(['admin', 'accountant', 'auditor']) && (
-            <div className="nav-group">
-              <div className="nav-group-label">{tr('Intelligence', 'Inteligjencë')}</div>
-              <NavLink to="/ai" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <SparkleIcon />
-                {tr('AI Analyst', 'Analisti AI')}
+        <nav className="flex flex-1 flex-col gap-1 px-3">
+          {can(['admin', 'accountant', 'data_clerk']) && (
+            <>
+              <NavLink to="/daily-ops" className={({ isActive }) => navCls(isActive)}>
+                <span className="material-symbols-outlined text-lg leading-none">receipt_long</span>
+                {tr('Operations', 'Operacionet')}
               </NavLink>
-              <NavLink to="/compliance" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                <CheckIcon />
+            </>
+          )}
+          {can(['admin', 'accountant', 'auditor']) && (
+            <>
+              <NavLink to="/ledger" className={({ isActive }) => navCls(isActive)}>
+                <span className="material-symbols-outlined text-lg leading-none">menu_book</span>
+                {tr('General Ledger', 'Libri Kryesor')}
+              </NavLink>
+              <NavLink to="/compliance" className={({ isActive }) => navCls(isActive)}>
+                <span className="material-symbols-outlined text-lg leading-none">verified_user</span>
                 {tr('Compliance', 'Përputhshmëri')}
               </NavLink>
-            </div>
+              <NavLink to="/ai" className={({ isActive }) => navCls(isActive)}>
+                <span className="material-symbols-outlined text-lg leading-none">psychology</span>
+                {tr('AI Analyst', 'Analisti AI')}
+              </NavLink>
+            </>
+          )}
+          {user?.role === 'admin' && (
+            <NavLink to="/platform/iam" className={({ isActive }) => navCls(isActive)}>
+              <span className="material-symbols-outlined text-lg leading-none">settings</span>
+              {tr('Admin', 'Administrator')}
+            </NavLink>
           )}
         </nav>
 
-        <div className="sidebar-footer">
-          <div className="sidebar-status">
-            <div className="status-dot" />
-            <span>{tr('API · All systems operational', 'API · Të gjitha sistemet operative')}</span>
-          </div>
-        </div>
       </aside>
 
-      {/* ── Main ────────────────────────────────── */}
-      <main className={`main${contentFill ? ' main--fill-viewport' : ''}`}>
-        <header className="topbar">
-          <div className="topbar-left">
-            <div className="page-title">{title}</div>
-            {subtitle && <div className="page-subtitle">{subtitle}</div>}
+      <main
+        className={`ml-64 flex min-h-screen flex-1 flex-col ${contentFill ? 'h-screen max-h-screen overflow-hidden' : ''}`}
+      >
+        <header className="sticky top-0 z-40 flex h-auto min-h-16 shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4 py-2 font-['Public_Sans'] text-sm tracking-tight text-[#102A43] sm:px-6 sm:py-0">
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
+            <span className="min-w-0 max-w-[38%] shrink truncate text-sm font-bold text-[#102A43] sm:max-w-[11rem] sm:text-lg">
+              {tr('Financial Portal', 'Portali financiar')}
+            </span>
+            <span className="hidden shrink-0 text-slate-300 sm:inline">|</span>
+            <div className="min-w-0 flex-1 overflow-hidden">
+              <div className="break-words font-semibold leading-snug text-slate-700 sm:truncate sm:leading-normal">
+                {title}
+              </div>
+              {subtitle && (
+                <div className="mt-0.5 break-words text-xs leading-snug text-slate-500 sm:truncate sm:leading-normal">
+                  {subtitle}
+                </div>
+              )}
+            </div>
           </div>
-          <div className="topbar-right">
+          <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2">
+            <div className="relative hidden max-w-[min(100%,20rem)] md:block">
+              <span className="material-symbols-outlined pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[20px] text-slate-400">
+                search
+              </span>
+              <input
+                type="search"
+                readOnly
+                placeholder={tr('Global search…', 'Kërkim global…')}
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 py-1.5 pl-9 pr-3 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+              />
+            </div>
             <select
-              className="select"
-              style={{ width: 90, height: 30 }}
+              className="select lang-select-compact max-w-full shrink-0"
               value={lang}
-              onChange={(e) => setLanguage((e.target.value as 'en' | 'sq'))}
+              onChange={(e) => setLanguage(e.target.value as 'en' | 'sq')}
             >
               <option value="en">EN</option>
               <option value="sq">SQ</option>
             </select>
-            {user?.role === 'admin' && (
-              <button className="btn btn-secondary btn-sm" onClick={() => navigate('/platform/iam')}>
-                {tr('Dashboard', 'Paneli')}
-              </button>
-            )}
             {user?.role && (
-              <button className="btn btn-secondary btn-sm" onClick={() => navigate('/profile')}>
+              <button type="button" className="btn btn-secondary btn-sm shrink-0" onClick={() => navigate('/profile')}>
                 {tr('Profile', 'Profili')}
               </button>
             )}
-            <button className="btn btn-secondary btn-sm" onClick={logout}>{tr('Logout', 'Dil')}</button>
-            <div className="topbar-badge">
-              <div className="status-dot" style={{ width: 6, height: 6 }} />
-              {tr('Live — Kosovo Law 06/L-032', 'Live — Ligji i Kosovës 06/L-032')}
-            </div>
+            <button type="button" className="btn btn-secondary btn-sm shrink-0" onClick={logout}>
+              {tr('Logout', 'Dil')}
+            </button>
           </div>
         </header>
 
-        <div className={`page-content${contentFill ? ' page-content--fill' : ''}`}>
+        <div
+          className={`mx-auto w-full max-w-container-max flex-1 px-margin ${contentFill ? 'flex min-h-0 flex-col overflow-hidden py-4' : 'py-6'}`}
+        >
           {children}
         </div>
       </main>

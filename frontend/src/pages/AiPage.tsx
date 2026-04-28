@@ -1,28 +1,27 @@
 import React, { useState, useRef } from 'react';
-import axios from 'axios';
-import { getLanguage } from '../language';
+import { api } from '../api/client';
 import { useLanguage } from '../useLanguage';
 
-const api = axios.create({ baseURL: '/api/v1' });
-
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('guri_token');
-  const rawUser = localStorage.getItem('guri_user');
-  let tenantId: string | undefined;
-  try { tenantId = rawUser ? JSON.parse(rawUser)?.tenantId : undefined; } catch {}
-  config.headers = config.headers || {};
-  if (token) (config.headers as any).Authorization = `Bearer ${token}`;
-  if (tenantId) (config.headers as any)['x-tenant-id'] = tenantId;
-  (config.headers as any)['x-lang'] = getLanguage();
-  return config;
-});
+function normalizeAiPayload(raw: unknown): { answer: string; confidence: number; sources: string[] } {
+  if (!raw || typeof raw !== 'object') {
+    return { answer: 'Unexpected empty response from server.', confidence: 0, sources: [] };
+  }
+  const o = raw as Record<string, unknown>;
+  const ans = o.answer;
+  const answer = typeof ans === 'string' ? ans : ans != null ? JSON.stringify(ans) : '(No answer text)';
+  const conf = Number(o.confidence);
+  const confidence = Number.isFinite(conf) ? Math.min(1, Math.max(0, conf)) : 0;
+  const src = o.sources;
+  const sources = Array.isArray(src) ? src.filter((s): s is string => typeof s === 'string') : [];
+  return { answer, confidence, sources };
+}
 
 export const AiPage: React.FC = () => {
   const lang = useLanguage();
   const tr = (en: string, sq: string) => (lang === 'en' ? en : sq);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
-  const [chatHistory, setChatHistory] = useState<Array<{ query: string; result: any }>>([]);
+  const [chatHistory, setChatHistory] = useState<Array<{ query: string; result: ReturnType<typeof normalizeAiPayload> }>>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const submitQuery = async () => {
@@ -32,12 +31,31 @@ export const AiPage: React.FC = () => {
     setLoading(true);
     try {
       const res = await api.post('/ai/query', { query: q });
-      setChatHistory(prev => [...prev, { query: q, result: res.data }]);
-    } catch (e: any) {
-      setChatHistory(prev => [...prev, { query: q, result: { answer: `Error: ${e.response?.data?.message || e.message}`, confidence: 0, sources: [] } }]);
+      const result = normalizeAiPayload(res.data);
+      setChatHistory((prev) => [...prev, { query: q, result }]);
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { message?: unknown } }; message?: string };
+      const msg =
+        typeof err.response?.data?.message === 'string'
+          ? err.response.data.message
+          : Array.isArray(err.response?.data?.message)
+            ? (err.response?.data?.message as string[]).join(', ')
+            : err.message ?? 'Request failed';
+      setChatHistory((prev) => [
+        ...prev,
+        {
+          query: q,
+          result: {
+            answer: tr(`Could not reach the AI service: ${msg}`, `Shërbimi AI nuk u arrit: ${msg}`),
+            confidence: 0,
+            sources: [],
+          },
+        },
+      ]);
+    } finally {
+      setLoading(false);
+      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
     }
-    setLoading(false);
-    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
   };
 
   const suggestedQueries = [
@@ -48,45 +66,18 @@ export const AiPage: React.FC = () => {
   ];
 
   return (
-    <div
-      className="ai-analyst-page"
-      style={{
-        flex: 1,
-        minHeight: 0,
-        display: 'flex',
-        flexDirection: 'column',
-      }}
-    >
-      <div
-        className="card"
-        style={{
-          flex: 1,
-          minHeight: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          borderRadius: 'var(--r-lg)',
-        }}
-      >
-        <div className="card-header" style={{ flexShrink: 0 }}>
-          <div>
+    <div className="ai-analyst-page flex min-h-0 flex-1 flex-col">
+      <div className="card flex min-h-0 flex-1 flex-col overflow-hidden shadow-md">
+        <div className="card-header shrink-0">
+          <div className="min-w-0">
             <div className="card-title">{tr('AI Financial Analyst', 'Analisti Financiar AI')}</div>
             <div className="card-subtitle">{tr('Ask anything about your finances in plain language', 'Pyet gjithçka për financat në gjuhë të thjeshtë')}</div>
           </div>
         </div>
 
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            padding: '16px 20px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 16,
-            overflowY: 'auto',
-          }}
-        >
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
           {chatHistory.length === 0 && (
-            <div className="empty-state" style={{ padding: 24, margin: 'auto 0' }}>
+            <div className="empty-state my-auto py-12">
               <div className="empty-state-icon">🤖</div>
               <div className="empty-state-text">{tr('Ask a financial question', 'Bëj një pyetje financiare')}</div>
               <div className="empty-state-sub">{tr('Try one of the suggestions below', 'Provo një nga sugjerimet më poshtë')}</div>
@@ -94,25 +85,25 @@ export const AiPage: React.FC = () => {
           )}
           {chatHistory.map((ch, i) => (
             <div key={i} className="stack-sm">
-              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <div className="flex justify-end">
                 <div className="chat-bubble chat-bubble-user">{ch.query}</div>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-start', flexDirection: 'column' }}>
-                <div className="chat-bubble chat-bubble-ai">
-                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 13, lineHeight: 1.6 }}>
+              <div className="flex flex-col items-start">
+                <div className="chat-bubble chat-bubble-ai border-slate-200 bg-white text-on-surface shadow-sm">
+                  <pre className="m-0 max-w-full whitespace-pre-wrap break-words font-body-md text-[13px] leading-relaxed text-on-surface">
                     {ch.result.answer}
                   </pre>
                 </div>
-                <div className="chat-meta" style={{ marginLeft: 4 }}>
+                <div className="chat-meta ml-1 mt-1">
                   {tr('Confidence', 'Besueshmëria')}: {(ch.result.confidence * 100).toFixed(0)}%
-                  {ch.result.sources?.length > 0 && ` · Sources: ${ch.result.sources.join(', ')}`}
+                  {ch.result.sources.length > 0 && ` · ${tr('Sources', 'Burimet')}: ${ch.result.sources.join(', ')}`}
                 </div>
               </div>
             </div>
           ))}
           {loading && (
-            <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
-              <div className="chat-bubble chat-bubble-ai" style={{ color: 'var(--slate-400)' }}>
+            <div className="flex justify-start">
+              <div className="chat-bubble chat-bubble-ai border border-outline-variant bg-surface-container-low text-on-surface-variant">
                 {tr('Analysing…', 'Duke analizuar…')}
               </div>
             </div>
@@ -120,21 +111,28 @@ export const AiPage: React.FC = () => {
           <div ref={chatEndRef} />
         </div>
 
-        <div style={{ padding: '0 20px 12px', display: 'flex', gap: 6, flexWrap: 'wrap', flexShrink: 0 }}>
-          {suggestedQueries.map(sq => (
-            <button key={sq} className="suggested-chip" type="button" onClick={() => setQuery(sq)}>{sq}</button>
+        <div className="flex shrink-0 flex-wrap gap-2 px-5 pb-3">
+          {suggestedQueries.map((sq) => (
+            <button key={sq} type="button" className="suggested-chip" onClick={() => setQuery(sq)}>
+              {sq}
+            </button>
           ))}
         </div>
 
-        <div style={{ padding: '12px 20px', borderTop: '1px solid var(--slate-100)', display: 'flex', gap: 8, flexShrink: 0 }}>
+        <div className="flex shrink-0 gap-2 border-t border-slate-200 px-5 py-3">
           <input
-            className="input"
+            className="input min-h-10 min-w-0 flex-1 leading-normal"
             placeholder="e.g. What is my net balance?"
             value={query}
-            onChange={e => setQuery(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && submitQuery()}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && submitQuery()}
           />
-          <button className="btn btn-primary" style={{ flexShrink: 0 }} type="button" onClick={submitQuery} disabled={loading || !query.trim()}>
+          <button
+            className="btn btn-primary shrink-0"
+            type="button"
+            onClick={submitQuery}
+            disabled={loading || !query.trim()}
+          >
             {tr('Send', 'Dërgo')}
           </button>
         </div>

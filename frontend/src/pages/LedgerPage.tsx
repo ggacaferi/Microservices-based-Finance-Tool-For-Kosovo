@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { getLanguage } from '../language';
+import { api } from '../api/client';
 import { useLanguage } from '../useLanguage';
 
 export const LedgerPage: React.FC = () => {
@@ -16,19 +15,6 @@ export const LedgerPage: React.FC = () => {
   const [tab, setTab] = useState<'entries' | 'trial' | 'lookup' | 'reports'>('entries');
   const [reportYear, setReportYear] = useState<number>(new Date().getFullYear());
   const [reportQuarter, setReportQuarter] = useState<number>(Math.floor(new Date().getMonth() / 3) + 1);
-
-  const api = axios.create({ baseURL: '/api/v1' });
-  api.interceptors.request.use((config) => {
-    const token = localStorage.getItem('guri_token');
-    const rawUser = localStorage.getItem('guri_user');
-    let tenantId: string | undefined;
-    try { tenantId = rawUser ? JSON.parse(rawUser)?.tenantId : undefined; } catch {}
-    config.headers = config.headers || {};
-    if (token) (config.headers as any).Authorization = `Bearer ${token}`;
-    if (tenantId) (config.headers as any)['x-tenant-id'] = tenantId;
-    (config.headers as any)['x-lang'] = getLanguage();
-    return config;
-  });
 
   const download = async (kind: 'profit-loss' | 'balance-sheet') => {
     const res = await api.get(`/ledger/reports/${kind}?year=${reportYear}&quarter=${reportQuarter}`, {

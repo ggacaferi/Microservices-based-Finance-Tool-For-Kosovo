@@ -290,8 +290,12 @@ export const IamPage: React.FC = () => {
     return (
       <div className="auth-shell">
         <div className="auth-card">
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
-            <select className="select" style={{ width: 90, height: 30 }} value={lang} onChange={(e) => setLanguage(e.target.value as 'en' | 'sq')}>
+          <div className="mb-2 flex min-w-0 justify-end">
+            <select
+              className="select lang-select-compact"
+              value={lang}
+              onChange={(e) => setLanguage(e.target.value as 'en' | 'sq')}
+            >
               <option value="en">EN</option>
               <option value="sq">SQ</option>
             </select>

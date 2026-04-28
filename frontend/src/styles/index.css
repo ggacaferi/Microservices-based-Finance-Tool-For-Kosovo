@@ -1,0 +1,354 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Legacy inline vars used in a few TSX files */
+@layer base {
+  :root {
+    --green-600: #16a34a;
+    --red-600: #dc2626;
+    --amber-600: #d97706;
+    --slate-900: #0f172a;
+    --slate-500: #64748b;
+    --slate-400: #94a3b8;
+    --slate-200: #e2e8f0;
+    --slate-100: #f1f5f9;
+    --blue-50: #eff6ff;
+    --blue-700: #1d4ed8;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  html {
+    @apply antialiased;
+  }
+  body {
+    @apply min-h-screen bg-background font-body-md text-body-md text-on-background;
+  }
+}
+
+/* Semantic classes — mapped to Stitch / Kosovo Business Ledger ERP tokens */
+@layer components {
+  .app-shell {
+    @apply min-h-screen bg-background;
+  }
+
+  .stack {
+    @apply flex flex-col gap-[13px];
+  }
+  .stack-sm {
+    @apply flex flex-col gap-[7px];
+  }
+  .stack-lg {
+    @apply flex flex-col gap-[21px];
+  }
+
+  .grid-2 {
+    @apply grid grid-cols-1 gap-gutter md:grid-cols-2;
+  }
+  .grid-3 {
+    @apply grid grid-cols-1 gap-gutter md:grid-cols-2 lg:grid-cols-3;
+  }
+  .grid-4 {
+    @apply grid grid-cols-1 gap-gutter sm:grid-cols-2 lg:grid-cols-4;
+  }
+  .grid-auto {
+    @apply grid grid-cols-[repeat(auto-fit,minmax(188px,1fr))] gap-gutter;
+  }
+  .col-span-2 {
+    @apply md:col-span-2;
+  }
+
+  .card {
+    @apply flex flex-col overflow-hidden rounded border border-slate-200 bg-white shadow-sm;
+  }
+  .card-header {
+    @apply flex min-w-0 shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3;
+  }
+  .card-title {
+    @apply font-headline-md text-headline-md text-on-surface;
+  }
+  .card-subtitle {
+    @apply mt-0.5 font-body-sm text-body-sm text-on-surface-variant;
+  }
+  .card-body {
+    @apply p-4;
+  }
+  .card-header-actions {
+    @apply flex min-w-0 shrink-0 flex-wrap items-center gap-2;
+  }
+
+  .card-header .select,
+  .card-header .input,
+  .card-header-actions .select {
+    @apply min-h-[2.25rem] min-w-0 max-w-full flex-1 py-2 leading-snug sm:flex-none sm:max-w-[220px];
+  }
+
+  .stat-card {
+    @apply flex min-h-[120px] flex-col justify-between rounded border border-slate-200 bg-white p-4 shadow-sm;
+  }
+  .stat-label {
+    @apply font-label-caps text-label-caps uppercase text-on-surface-variant;
+  }
+  .stat-value {
+    @apply mt-2 font-headline-lg text-headline-lg text-on-surface;
+  }
+  .stat-sub {
+    @apply mt-1 font-body-sm text-body-sm text-on-surface-variant;
+  }
+
+  .erp-table {
+    @apply w-full border-collapse text-left;
+  }
+  .erp-table th {
+    @apply border-b border-outline-variant bg-surface-container-low px-table-cell-padding-x py-table-cell-padding-y font-label-caps text-label-caps uppercase tracking-wider text-on-surface-variant;
+  }
+  .erp-table td {
+    @apply border-b border-outline-variant/50 px-table-cell-padding-x py-table-cell-padding-y font-body-sm text-body-sm text-on-surface;
+  }
+  .erp-table tbody tr {
+    @apply transition-colors hover:bg-sky-50/80;
+  }
+  .erp-table tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .lines-table {
+    @apply w-full border-collapse;
+  }
+  .lines-table th {
+    @apply border-b border-outline-variant bg-surface-container-low px-2 py-1.5 font-label-caps text-label-caps text-on-surface-variant;
+  }
+  .lines-table td {
+    @apply border-b border-outline-variant/60 px-2 py-1.5 align-middle font-body-sm text-body-sm;
+  }
+  .lines-table tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .form-section {
+    @apply flex flex-col gap-4;
+  }
+  .field-group {
+    @apply flex flex-col gap-1;
+  }
+  .field-label {
+    @apply font-body-sm text-body-sm font-semibold text-on-surface;
+  }
+  .field-row {
+    @apply flex flex-wrap items-end gap-2;
+  }
+
+  .input,
+  .select {
+    @apply w-full rounded border border-slate-300 bg-white px-3 py-2 font-body-md text-body-md leading-normal text-on-surface shadow-sm outline-none ring-0 transition focus:border-primary-container focus:ring-2 focus:ring-primary-container/25;
+  }
+  .select {
+    @apply cursor-pointer bg-white pr-9;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%2343474d' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    appearance: none;
+  }
+
+  /* Fixed width — overrides .select w-full for compact toolbar / auth language pickers */
+  .select.lang-select-compact {
+    @apply h-8 w-[88px] max-w-full shrink-0 py-1 text-[13px];
+    width: 5.5rem;
+  }
+
+  .btn {
+    @apply inline-flex h-9 shrink-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-transparent px-4 font-body-md text-body-md font-semibold shadow-sm transition hover:brightness-[1.02] active:scale-[0.98];
+  }
+  .btn-primary {
+    @apply bg-[#102A43] text-white hover:bg-[#0c2034];
+  }
+  .btn-secondary {
+    @apply border-slate-300 bg-white text-slate-800 hover:bg-slate-50;
+  }
+  .btn-success {
+    @apply border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800;
+  }
+  .btn-danger {
+    @apply border-red-700 bg-red-700 text-white hover:bg-red-800;
+  }
+  .btn-sm {
+    @apply h-8 px-3 text-[13px];
+  }
+  .btn-xs {
+    @apply h-7 px-2.5 text-[11px];
+  }
+  .btn-group {
+    @apply flex flex-wrap items-center gap-2;
+  }
+
+  .btn:disabled {
+    @apply cursor-not-allowed opacity-45;
+  }
+
+  .badge {
+    @apply inline-flex items-center whitespace-nowrap rounded-full border border-transparent px-2 py-0.5 font-label-caps text-label-caps;
+  }
+  .badge-blue {
+    @apply border-secondary-fixed bg-secondary-fixed text-on-secondary-fixed;
+  }
+  .badge-green {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-900;
+  }
+  .badge-amber {
+    @apply border-amber-200 bg-amber-50 text-amber-900;
+  }
+  .badge-red {
+    @apply border-red-200 bg-red-50 text-red-900;
+  }
+  .badge-slate {
+    @apply border-outline-variant bg-surface-container-low text-on-surface-variant;
+  }
+
+  .tabs {
+    @apply mb-5 flex gap-1 border-b border-outline-variant;
+  }
+  .tab {
+    @apply -mb-px border-b-2 border-transparent px-4 py-2 font-headline-md text-[13px] font-semibold text-slate-600 transition hover:text-[#102A43];
+  }
+  .tab.active {
+    @apply border-[#102A43] text-[#102A43];
+  }
+
+  .alert {
+    @apply flex items-start gap-2.5 rounded border px-3.5 py-3 font-body-md text-body-md;
+  }
+  .alert-success {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-900;
+  }
+  .alert-error {
+    @apply border-red-200 bg-red-50 text-red-900;
+  }
+  .alert-warning {
+    @apply border-amber-200 bg-amber-50 text-amber-900;
+  }
+  .alert-info {
+    @apply border-secondary-fixed bg-secondary-fixed text-on-secondary-fixed;
+  }
+
+  .divider {
+    @apply my-4 border-0 border-t border-outline-variant;
+  }
+  .section-title {
+    @apply mb-3 font-headline-md text-[13px] font-bold text-on-surface;
+  }
+
+  .code-block {
+    @apply max-h-64 overflow-auto rounded border border-outline-variant bg-inverse-surface px-4 py-3 font-mono text-[11.5px] leading-relaxed text-inverse-on-surface;
+  }
+
+  .workflow-steps {
+    @apply flex flex-col;
+  }
+  .workflow-step {
+    @apply relative flex gap-3.5 py-3;
+  }
+  .workflow-step:not(:last-child)::after {
+    content: '';
+    @apply absolute bottom-0 left-[15px] top-11 w-0.5 bg-outline-variant;
+  }
+  .step-dot {
+    @apply flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-container text-xs font-bold text-on-primary;
+  }
+  .step-content {
+    @apply flex-1 pt-1;
+  }
+  .step-title {
+    @apply font-headline-md text-[13px] font-semibold text-on-surface;
+  }
+  .step-sub {
+    @apply mt-0.5 font-body-sm text-body-sm text-on-surface-variant;
+  }
+
+  .empty-state {
+    @apply flex flex-col items-center justify-center gap-2 px-5 py-10 text-center;
+  }
+  .empty-state-icon {
+    @apply flex h-16 w-16 items-center justify-center rounded-full border-2 border-dashed border-outline-variant bg-surface-container-low text-2xl text-on-surface-variant;
+  }
+  .empty-state-text {
+    @apply font-headline-md text-body-md font-semibold text-on-surface-variant;
+  }
+  .empty-state-sub {
+    @apply max-w-sm font-body-sm text-body-sm text-on-surface-variant;
+  }
+
+  .chat-bubble {
+    @apply max-w-[90%] rounded-xl px-4 py-2.5 font-body-md text-body-md leading-relaxed;
+  }
+  .chat-bubble-user {
+    @apply self-end rounded-br-sm bg-[#102A43] text-white;
+  }
+  .chat-bubble-ai {
+    @apply rounded-bl-sm border border-slate-200 bg-white text-on-surface shadow-sm;
+  }
+  .chat-meta {
+    @apply mt-1 font-body-sm text-[11px] text-on-surface-variant;
+  }
+  .suggested-chip {
+    @apply inline-flex max-w-full cursor-pointer items-center whitespace-normal rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-left font-body-sm text-body-sm font-medium text-[#102A43] shadow-sm transition hover:border-sky-300 hover:bg-sky-100;
+  }
+
+  .muted {
+    @apply font-body-sm text-body-sm text-on-surface-variant;
+  }
+  .text-mono {
+    @apply font-data-mono text-data-mono text-on-surface;
+  }
+  .fw-700 {
+    @apply font-bold;
+  }
+  .col-amount {
+    @apply text-right font-data-mono text-data-mono font-semibold tabular-nums;
+  }
+
+  /* Auth (Stitch-aligned shell) */
+  .auth-shell {
+    @apply grid min-h-screen place-items-center bg-gradient-to-br from-surface-bright via-background to-surface-container-low px-6 py-8;
+  }
+  .auth-card {
+    @apply w-full min-w-0 max-w-md overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest p-7 shadow-lg;
+  }
+  .auth-title {
+    @apply font-headline-lg text-headline-lg text-on-surface;
+  }
+  .auth-subtitle {
+    @apply mt-1 font-body-sm text-body-sm text-on-surface-variant;
+  }
+  .auth-tabs {
+    @apply mb-4 flex gap-2;
+  }
+  .auth-tab {
+    @apply flex-1 rounded-full border border-outline-variant bg-white py-2 text-sm font-semibold text-on-surface-variant transition hover:bg-surface-container-low;
+  }
+  .auth-tab.active {
+    @apply border-primary-container bg-secondary-fixed text-primary-container;
+  }
+  .auth-form {
+    @apply flex flex-col gap-3;
+  }
+  .auth-btn {
+    @apply mt-1 w-full;
+  }
+  .auth-created {
+    @apply mt-3 flex flex-col gap-1 rounded border border-emerald-200 bg-emerald-50 p-3 text-[12px] text-emerald-900;
+  }
+
+  .list-row {
+    @apply flex items-center justify-between gap-3 border-b border-outline-variant/60 py-2.5 last:border-b-0;
+  }
+
+  .ai-analyst-page {
+    @apply flex min-h-0 flex-1 flex-col;
+  }
+
+  ::-webkit-scrollbar {
+    @apply h-1.5 w-1.5;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-outline-variant;
+  }
+}

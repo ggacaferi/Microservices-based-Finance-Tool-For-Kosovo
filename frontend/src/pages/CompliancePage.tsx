@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { getLanguage } from '../language';
+import { api } from '../api/client';
 import { useLanguage } from '../useLanguage';
 
 const accountTypeBadge: Record<string, string> = {
@@ -18,19 +17,6 @@ export const CompliancePage: React.FC = () => {
   const [accountFilter, setAccountFilter] = useState('');
   const [ruleFilter, setRuleFilter] = useState('');
   const [refreshing, setRefreshing] = useState(false);
-
-  const api = axios.create({ baseURL: '/api/v1' });
-  api.interceptors.request.use((config) => {
-    const token = localStorage.getItem('guri_token');
-    const rawUser = localStorage.getItem('guri_user');
-    let tenantId: string | undefined;
-    try { tenantId = rawUser ? JSON.parse(rawUser)?.tenantId : undefined; } catch {}
-    config.headers = config.headers || {};
-    if (token) (config.headers as any).Authorization = `Bearer ${token}`;
-    if (tenantId) (config.headers as any)['x-tenant-id'] = tenantId;
-    (config.headers as any)['x-lang'] = getLanguage();
-    return config;
-  });
 
   const loadAll = async () => {
     try {

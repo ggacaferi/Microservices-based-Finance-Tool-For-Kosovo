@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import axios from 'axios';
 import App from './App';
-import './styles/global.css';
+import './styles/index.css';
 
 axios.interceptors.request.use((config) => {
   const token = localStorage.getItem('guri_token');
@@ -13,7 +13,7 @@ axios.interceptors.request.use((config) => {
 
   config.headers = config.headers || {};
   if (token) (config.headers as any).Authorization = `Bearer ${token}`;
-  if (tenantId) (config.headers as any)['x-tenant-id'] = tenantId;
+  (config.headers as any)['x-tenant-id'] = tenantId?.trim() || 'public';
   return config;
 });
 
