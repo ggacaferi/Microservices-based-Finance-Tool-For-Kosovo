@@ -69,4 +69,59 @@ describe('InventoryService', () => {
     expect(reversal.type).toBe('ISSUE');
     expect(item?.quantityOnHand).toBe(0);
   });
+
+  it('rejects non-positive quantity', () => {
+    expect(() =>
+      service.recordMovement({
+        sku: 'SKU-0',
+        description: 'X',
+        type: 'RECEIPT',
+        quantity: 0,
+        unitCost: 1,
+      }),
+    ).toThrow(/Quantity must be greater than zero/);
+  });
+
+  it('rejects negative receipt unit cost', () => {
+    expect(() =>
+      service.recordMovement({
+        sku: 'SKU-neg',
+        description: 'X',
+        type: 'RECEIPT',
+        quantity: 1,
+        unitCost: -1,
+      }),
+    ).toThrow(/cannot be negative/);
+  });
+
+  it('throws when reversing twice', () => {
+    const movement = service.recordMovement({
+      sku: 'SKU-dup',
+      description: 'Pen',
+      type: 'RECEIPT',
+      quantity: 1,
+      unitCost: 2,
+    });
+    service.reverseMovement(movement.id, 'first');
+    expect(() => service.reverseMovement(movement.id, 'second')).toThrow(
+      /already reversed/,
+    );
+  });
+
+  it('uses average cost on issue when unitCost omitted', () => {
+    service.recordMovement({
+      sku: 'SKU-avg',
+      description: 'Ink',
+      type: 'RECEIPT',
+      quantity: 4,
+      unitCost: 10,
+    });
+    const issue = service.recordMovement({
+      sku: 'SKU-avg',
+      description: 'Ink',
+      type: 'ISSUE',
+      quantity: 1,
+    });
+    expect(issue.unitCost).toBe(10);
+  });
 });

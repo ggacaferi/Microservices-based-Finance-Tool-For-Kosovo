@@ -88,7 +88,16 @@ describe('BillService', () => {
     );
   });
 
-  it('lists bills by status filter', async () => {
+  it('throws NotFoundException for missing bill on post and reverse', async () => {
+    await expect(service.postBill('missing-id')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(service.reverseBill('missing-id', 'r')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it('lists all bills when status filter omitted', async () => {
     const draft = await service.createBill({
       supplierId: 'SUP-13',
       issueDate: '2026-02-17',
@@ -121,9 +130,12 @@ describe('BillService', () => {
 
     const drafts = await service.listBills(BillStatus.Draft);
     const postedOnly = await service.listBills(BillStatus.Posted);
+    const all = await service.listBills();
 
     expect(drafts.some((x) => x.id === draft.id)).toBe(true);
     expect(postedOnly.some((x) => x.id === posted.id)).toBe(true);
+    expect(all.some((x) => x.id === draft.id)).toBe(true);
+    expect(all.some((x) => x.id === posted.id)).toBe(true);
   });
 
   it('throws NotFoundException for missing bill', async () => {

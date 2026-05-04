@@ -2,10 +2,11 @@ import { v4 as uuidv4 } from 'uuid';
 import { ComplianceClient } from '../../compliance/compliance.client';
 
 export enum BillStatus {
-  Draft    = 'DRAFT',
-  Posted   = 'POSTED',
-  Paid     = 'PAID',
-  Reverted = 'REVERTED',
+  Draft      = 'DRAFT',
+  Posted     = 'POSTED',
+  Paid       = 'PAID',
+  Reversing  = 'REVERSING',  // saga in-flight: reversal requested, awaiting ledger confirmation
+  Reverted   = 'REVERTED',
 }
 
 export interface BillLineProps {
@@ -88,8 +89,9 @@ export class FaturaHyrese {
   get totalNetAmount(): number            { return this._lines.reduce((s, l) => s + l.netAmount, 0); }
 
   private ensureMutable(): void {
-    if (this._status === BillStatus.Posted)   throw new Error('Cannot modify a posted bill. Use reversal.');
-    if (this._status === BillStatus.Reverted) throw new Error('Cannot modify a reverted bill.');
+    if (this._status === BillStatus.Posted)    throw new Error('Cannot modify a posted bill. Use reversal.');
+    if (this._status === BillStatus.Reversing) throw new Error('Bill reversal is already in progress.');
+    if (this._status === BillStatus.Reverted)  throw new Error('Cannot modify a reverted bill.');
   }
 
   post(complianceClient: ComplianceClient): void {
@@ -100,11 +102,28 @@ export class FaturaHyrese {
     this._status = BillStatus.Posted;
   }
 
+  /** Begin the storno saga: moves bill to REVERSING and triggers the billRevertRequested event. */
   reverse(): void {
     if (this._status !== BillStatus.Posted) {
       throw new Error(`Storno is only allowed for Posted bills. Current: ${this._status}`);
     }
+    this._status = BillStatus.Reversing;
+  }
+
+  /** Saga step 2 (success path): Ledger confirmed STORNO was posted → finalise as REVERTED. */
+  confirmReversal(): void {
+    if (this._status !== BillStatus.Reversing) {
+      throw new Error(`Cannot confirm reversal: expected REVERSING, got ${this._status}`);
+    }
     this._status = BillStatus.Reverted;
+  }
+
+  /** Saga step 2 (compensating path): Ledger could not post STORNO → roll back to POSTED. */
+  cancelReversal(): void {
+    if (this._status !== BillStatus.Reversing) {
+      throw new Error(`Cannot cancel reversal: expected REVERSING, got ${this._status}`);
+    }
+    this._status = BillStatus.Posted;
   }
 
   pay(): void {

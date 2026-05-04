@@ -44,16 +44,16 @@ describe('Domain Event System', () => {
     const handler1Calls: any[] = [];
     const handler2Calls: any[] = [];
 
-    eventBus.subscribe('billReverted', (event) => {
+    eventBus.subscribe('billRevertRequested', (event) => {
       handler1Calls.push(event);
     });
 
-    eventBus.subscribe('billReverted', (event) => {
+    eventBus.subscribe('billRevertRequested', (event) => {
       handler2Calls.push(event);
     });
 
     eventBus.publish({
-      type: 'billReverted',
+      type: 'billRevertRequested',
       billId: 'test-456',
       originalReference: 'Bill-test-456',
       date: new Date().toISOString(),
@@ -74,7 +74,7 @@ describe('Domain Event System', () => {
       billPostedCalls.push(event);
     });
 
-    eventBus.subscribe('billReverted', (event) => {
+    eventBus.subscribe('billRevertRequested', (event) => {
       billRevertedCalls.push(event);
     });
 
@@ -130,11 +130,11 @@ describe('Ledger Integration Service', () => {
 
     const workflow = ledgerService.explainBillWorkflow('bill-123');
     expect(workflow.journalEntries).toHaveLength(1);
-    expect(workflow.journalEntries[0].kind).toBe('ORIGINAL');
-    expect(workflow.journalEntries[0].amount).toBe(200);
+    const only = workflow.journalEntries.find((e) => e.kind === 'ORIGINAL');
+    expect(only?.amount).toBe(200);
   });
 
-  it('should create storno entry when bill is reverted', () => {
+  it('should create storno entry when bill revert is requested', () => {
     // First post
     eventBus.publish({
       type: 'billPosted',
@@ -145,9 +145,9 @@ describe('Ledger Integration Service', () => {
       date: new Date().toISOString()
     });
 
-    // Then revert
+    // Saga step 1: request revert
     eventBus.publish({
-      type: 'billReverted',
+      type: 'billRevertRequested',
       billId: 'bill-456',
       originalReference: 'Bill-bill-456',
       date: new Date().toISOString(),
@@ -156,9 +156,10 @@ describe('Ledger Integration Service', () => {
 
     const workflow = ledgerService.explainBillWorkflow('bill-456');
     expect(workflow.journalEntries).toHaveLength(2);
-    expect(workflow.journalEntries[0].kind).toBe('ORIGINAL');
-    expect(workflow.journalEntries[1].kind).toBe('STORNO');
-    expect(workflow.journalEntries[1].amount).toBe(300);
+    const original = workflow.journalEntries.find((e) => e.kind === 'ORIGINAL');
+    const storno = workflow.journalEntries.find((e) => e.kind === 'STORNO');
+    expect(original?.amount).toBe(300);
+    expect(storno?.amount).toBe(300);
   });
 
   it('should swap debits and credits in storno entry', () => {
@@ -172,7 +173,7 @@ describe('Ledger Integration Service', () => {
     });
 
     eventBus.publish({
-      type: 'billReverted',
+      type: 'billRevertRequested',
       billId: 'bill-789',
       originalReference: 'Bill-bill-789',
       date: new Date().toISOString(),
@@ -180,8 +181,8 @@ describe('Ledger Integration Service', () => {
     });
 
     const workflow = ledgerService.explainBillWorkflow('bill-789');
-    const original = workflow.journalEntries[0];
-    const storno = workflow.journalEntries[1];
+    const original = workflow.journalEntries.find((e) => e.kind === 'ORIGINAL')!;
+    const storno = workflow.journalEntries.find((e) => e.kind === 'STORNO')!;
 
     // Verify storno swaps debits and credits
     expect(storno.lines).toHaveLength(original.lines.length);

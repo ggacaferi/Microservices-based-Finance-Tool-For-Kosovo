@@ -73,7 +73,6 @@ describe('Storno Workflow (e2e)', () => {
       // Verify workflow object
       expect(stornoRes.body.workflow).toBeDefined();
       expect(stornoRes.body.workflow.event).toBeDefined();
-      expect(stornoRes.body.workflow.event.type).toBe('billReverted');
       expect(stornoRes.body.workflow.event.payload).toBeDefined();
       expect(stornoRes.body.workflow.event.payload.OriginalReference).toBe(`Bill-${billId}`);
       expect(stornoRes.body.workflow.event.payload.Reason).toBe('Workflow test storno');

@@ -84,10 +84,32 @@ export class BillService {
   async reverseBill(tenantId: string, id: string, reason: string): Promise<FaturaHyrese> {
     const bill = await this.findOrFail(tenantId, id);
     try { bill.reverse(); } catch (e: any) { throw new BadRequestException(e.message); }
+    // Saga step 1: commit REVERSING status, then fire-and-request to Ledger.
+    // The bill stays REVERSING until Ledger replies with stornoPosted or stornoFailed.
     await this.billRepo.save(tenantId, bill);
-    this.activityLog.record(tenantId, 'BILL_STORNO', { entityId: bill.id, summary: `Bill ${bill.id} reverted. Reason: ${reason || 'n/a'}` });
-    await this.eventPublisher.publish({ type: 'billReverted', tenantId, billId: bill.id, originalReference: `Bill-${bill.id}`, date: new Date().toISOString(), reason });
+    this.activityLog.record(tenantId, 'BILL_STORNO_REQUESTED', { entityId: bill.id, summary: `Bill ${bill.id} reversal requested. Reason: ${reason || 'n/a'}` });
+    await this.eventPublisher.publish({ type: 'billRevertRequested', tenantId, billId: bill.id, originalReference: `Bill-${bill.id}`, date: new Date().toISOString(), reason });
     return bill;
+  }
+
+  /** Saga step 2 (success path): called when Ledger confirms STORNO was posted. */
+  async handleStornoPosted(tenantId: string, originalReference: string): Promise<void> {
+    const billId = originalReference.startsWith('Bill-') ? originalReference.slice(5) : originalReference;
+    const bill = await this.billRepo.findById(tenantId, billId);
+    if (!bill) return;
+    try { bill.confirmReversal(); } catch { return; }
+    await this.billRepo.save(tenantId, bill);
+    this.activityLog.record(tenantId, 'BILL_STORNO_CONFIRMED', { entityId: bill.id, summary: `Bill ${bill.id} storno confirmed by Ledger` });
+  }
+
+  /** Saga compensating transaction: called when Ledger could not post STORNO → roll bill back to POSTED. */
+  async handleStornoFailed(tenantId: string, originalReference: string, error: string): Promise<void> {
+    const billId = originalReference.startsWith('Bill-') ? originalReference.slice(5) : originalReference;
+    const bill = await this.billRepo.findById(tenantId, billId);
+    if (!bill) return;
+    try { bill.cancelReversal(); } catch { return; }
+    await this.billRepo.save(tenantId, bill);
+    this.activityLog.record(tenantId, 'BILL_STORNO_COMPENSATED', { entityId: bill.id, summary: `Bill ${bill.id} reversal failed (${error}); rolled back to POSTED` });
   }
 
   async getBill(tenantId: string, id: string): Promise<FaturaHyrese>             { return this.findOrFail(tenantId, id); }

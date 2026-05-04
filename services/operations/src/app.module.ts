@@ -19,6 +19,7 @@ import { InventoryController } from './infrastructure/inventory.controller';
 import { OperationsController } from './infrastructure/operations.controller';
 import { EdiController } from './infrastructure/edi.controller';
 import { IamTenantLookupService } from './integrations/iam-tenant.lookup';
+import { KafkaLedgerSagaConsumer } from './infrastructure/kafka-ledger-saga.consumer';
 
 const host = process.env.OPS_DB_HOST || process.env.POSTGRES_HOST;
 const entities = [BillOrmEntity, InvoiceOrmEntity, InventoryMovementOrmEntity, OutboxEventOrmEntity, EdiInboxOrmEntity];
@@ -31,6 +32,6 @@ const entities = [BillOrmEntity, InvoiceOrmEntity, InventoryMovementOrmEntity, O
     ] : []),
   ],
   controllers: [BillsController, InvoicesController, InventoryController, OperationsController, EdiController],
-  providers: [ComplianceClient, CrossServiceEventPublisher, BillRepository, BillService, EdiInboxService, IamTenantLookupService, InvoiceService, InventoryService, ActivityLogService],
+  providers: [ComplianceClient, CrossServiceEventPublisher, BillRepository, BillService, EdiInboxService, IamTenantLookupService, InvoiceService, InventoryService, ActivityLogService, KafkaLedgerSagaConsumer],
 })
 export class AppModule {}

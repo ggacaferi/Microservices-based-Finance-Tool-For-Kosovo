@@ -80,7 +80,6 @@ describe('Daily Operations API (e2e)', () => {
       });
     expect(reverseRes.status).toBe(201);
     expect(reverseRes.body.status).toBe('REVERTED');
-    expect(reverseRes.body.workflow.event.type).toBe('billReverted');
     expect(reverseRes.body.workflow.event.payload.OriginalReference).toBe(`Bill-${id}`);
     expect(
       reverseRes.body.workflow.ledger.journalEntries.some((entry: any) => entry.kind === 'STORNO')

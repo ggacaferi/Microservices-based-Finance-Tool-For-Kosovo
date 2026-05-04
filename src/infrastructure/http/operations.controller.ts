@@ -55,7 +55,7 @@ export class OperationsController {
         })),
         workflow: {
           event: {
-            type: 'billReverted',
+            type: 'billRevertRequested',
             payload: {
               OriginalReference: `Bill-${bill.id}`,
               Date: new Date().toISOString(),

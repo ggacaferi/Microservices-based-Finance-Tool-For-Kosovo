@@ -11,8 +11,8 @@ export interface BillPostedEvent {
   originalReference: string;
 }
 
-export interface BillRevertedEvent {
-  type: 'billReverted';
+export interface BillRevertRequestedEvent {
+  type: 'billRevertRequested';
   originalReference: string;
   billId: string;
   date: string;
@@ -29,21 +29,21 @@ export interface JournalEntryPostedEvent {
 
 export type DomainEvent =
   | BillPostedEvent
-  | BillRevertedEvent
+  | BillRevertRequestedEvent
   | JournalEntryPostedEvent;
 
 // ── Topic name mapping ───────────────────────────────────
 
 const TOPIC_MAP: Record<DomainEvent['type'], string> = {
-  billPosted: 'guri-finance.operations.bill-posted',
-  billReverted: 'guri-finance.operations.bill-reverted',
-  journalEntryPosted: 'guri-finance.ledger.journal-entry-posted',
+  billPosted:          'guri-finance.operations.bill-posted',
+  billRevertRequested: 'guri-finance.operations.bill-revert-requested',
+  journalEntryPosted:  'guri-finance.ledger.journal-entry-posted',
 };
 
 const SUBSCRIPTION_MAP: Record<DomainEvent['type'], string> = {
-  billPosted: 'guri-finance.ledger.bill-posted-sub',
-  billReverted: 'guri-finance.ledger.bill-reverted-sub',
-  journalEntryPosted: 'guri-finance.ai.journal-entry-posted-sub',
+  billPosted:          'guri-finance.ledger.bill-posted-sub',
+  billRevertRequested: 'guri-finance.ledger.bill-revert-requested-sub',
+  journalEntryPosted:  'guri-finance.ai.journal-entry-posted-sub',
 };
 
 // ── Google Cloud Pub/Sub–backed Event Bus ────────────────

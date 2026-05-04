@@ -2,401 +2,323 @@ import { Injectable, Logger, Optional, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
-import { Client } from 'pg';
 import { AiEventOrmEntity } from './infrastructure/ai-event.orm-entity';
+import { EmbeddingClient } from './rag/embedding.client';
+import { RagVectorStore, RagChunk } from './rag/rag-vector-store';
+import { ComplianceCorpusSeeder } from './rag/compliance-corpus.seeder';
+
+// ── Public types (controller depends on these) ────────────────────────────
 
 export interface FinancialInsight {
-  id: string;
-  type: 'expense_spike' | 'trend_observation' | 'summary';
-  message: string;
-  severity: 'info' | 'warning' | 'critical';
+  id:        string;
+  type:      'expense_spike' | 'trend_observation' | 'summary';
+  message:   string;
+  severity:  'info' | 'warning' | 'critical';
   timestamp: string;
-  data?: Record<string, any>;
+  data?:     Record<string, any>;
 }
 
-/** Event shape received from Ledger Service via HTTP POST to /api/v1/ai/events */
+/** Event shape received from Ledger Service */
 export interface JournalEntryPostedEvent {
-  type: 'journalEntryPosted';
-  tenantId: string;
+  type:           'journalEntryPosted';
+  tenantId:       string;
   journalEntryId: string;
-  reference: string;
-  date: string;
-  deltaExpenses: number;
+  reference:      string;
+  date:           string;
+  deltaExpenses:  number;
 }
+
+// ── Internal state ────────────────────────────────────────────────────────
 
 interface TenantState {
-  totalExpenses: number;
-  entryCount: number;
-  lastUpdated: string;
+  totalExpenses:  number;
+  entryCount:     number;
+  lastUpdated:    string;
   insightCounter: number;
-  insights: FinancialInsight[];
-  history: Array<{ reference: string; amount: number; date: string }>;
+  insights:       FinancialInsight[];
+  history:        Array<{ reference: string; amount: number; date: string }>;
 }
 
-const LEGACY_TO_SKA_ACCOUNT: Record<string, string> = {
-  '1000': '100',
-  '1100': '140',
-  '1200': '125',
-  '2000': '220',
-  '4000': '700',
-  '5000': '500',
-  '5100': '665-09',
-};
-
+/**
+ * AiService — Retrieval-Augmented Generation pipeline
+ *
+ * Ingest path:
+ *   Ledger fires journalEntryPosted → ingestEvent() updates the in-memory
+ *   aggregate, persists to Postgres, and indexes an embedding in the
+ *   ai_rag_chunks table so it becomes retrievable.
+ *
+ * Query path (POST /ai/query):
+ *   1. Embed the user's question with Gemini text-embedding-004 (RETRIEVAL_QUERY)
+ *   2. Cosine-similarity search over ai_rag_chunks:
+ *      — shared corpus: SKA accounts, compliance rules, VAT categories
+ *      — tenant corpus: journal entry chunks for this tenant
+ *   3. Augment: inject retrieved chunks + in-memory financial summary into prompt
+ *   4. Generate: call Gemini generateContent with the augmented prompt
+ *   5. Return answer, sources, confidence — same response shape as before
+ *
+ * Fallback: when no Gemini API key is set or the vector store is unavailable
+ * the service returns the plain aggregate snapshot so the API never errors.
+ *
+ * Public API surface is unchanged — AiController needs no modifications.
+ */
 @Injectable()
 export class AiService implements OnModuleInit {
   private readonly logger = new Logger(AiService.name);
+
   private readonly geminiApiKey = process.env.GEMINI_API_KEY || '';
-  private readonly geminiModel = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
+  private readonly geminiModel  = process.env.GEMINI_MODEL   || 'gemini-2.0-flash';
 
   private readonly tenantStates = new Map<string, TenantState>();
 
   constructor(
     @Optional() @InjectRepository(AiEventOrmEntity, 'ai')
     private readonly orm?: Repository<AiEventOrmEntity>,
+
+    @Optional() private readonly embedder?: EmbeddingClient,
+    @Optional() private readonly vectorStore?: RagVectorStore,
+    @Optional() private readonly corpusSeeder?: ComplianceCorpusSeeder,
   ) {
-    this.logger.log(this.orm ? 'AI Service: pgvector Postgres-backed' : 'AI Service: in-memory');
+    this.logger.log(this.orm ? 'AiService: pgvector Postgres-backed' : 'AiService: in-memory');
   }
 
   async onModuleInit(): Promise<void> {
-    if (!this.orm) return;
-    const rows = await this.orm.find({ order: { createdAt: 'ASC' } });
-    for (const row of rows) {
-      const tenantId = row.tenantId || 'public';
-      const state = this.stateFor(tenantId);
-      const amount = Number(row.amount);
-      state.totalExpenses += amount;
-      state.entryCount++;
-      if (row.date > state.lastUpdated) state.lastUpdated = row.date;
-      state.history.push({ reference: row.reference, amount, date: row.date });
+    // Rehydrate in-memory aggregate from persisted events
+    if (this.orm) {
+      const rows = await this.orm.find({ order: { createdAt: 'ASC' } });
+      for (const row of rows) {
+        const tenantId = row.tenantId || 'public';
+        const state    = this.stateFor(tenantId);
+        const amount   = Number(row.amount);
+        state.totalExpenses += amount;
+        state.entryCount++;
+        if (row.date > state.lastUpdated) state.lastUpdated = row.date;
+        state.history.push({ reference: row.reference, amount, date: row.date });
+      }
+      if (rows.length > 0)
+        this.logger.log(`Rehydrated ${rows.length} events across ${this.tenantStates.size} tenant(s)`);
     }
-    if (rows.length > 0) this.logger.log(`Rebuilt aggregates from ${rows.length} Postgres events across ${this.tenantStates.size} tenant(s)`);
+
+    // Seed shared compliance corpus (SKA accounts, rules, VAT categories)
+    // Runs after RagVectorStore.onModuleInit() because NestJS resolves providers
+    // in dependency order (VectorStore → Seeder → AiService).
+    if (this.corpusSeeder) {
+      await this.corpusSeeder.seed().catch(err =>
+        this.logger.warn(`Corpus seed failed (non-fatal): ${err?.message}`),
+      );
+    }
   }
 
-  /** Called by AiController when Ledger posts a journalEntryPosted event */
+  // ── Ingest (called by controller and Kafka consumer) ─────────────────────
+
   ingestEvent(event: JournalEntryPostedEvent): void {
     const tenantId = event.tenantId || 'public';
-    const state = this.stateFor(tenantId);
+    const state    = this.stateFor(tenantId);
+
     state.totalExpenses += event.deltaExpenses;
     state.entryCount++;
     state.lastUpdated = event.date;
-
     state.history.push({ reference: event.reference, amount: event.deltaExpenses, date: event.date });
+
+    const text = this.buildJournalChunkText(event);
 
     if (this.orm) {
       this.orm.save({
-        id: uuidv4(), tenantId, reference: event.reference, amount: event.deltaExpenses,
-        date: event.date, isStorno: false,
-        textContent: `Journal entry ${event.journalEntryId} for ${event.reference}: €${Math.abs(event.deltaExpenses).toFixed(2)} posted`,
+        id:          uuidv4(),
+        tenantId,
+        reference:   event.reference,
+        amount:      event.deltaExpenses,
+        date:        event.date,
+        isStorno:    false,
+        textContent: text,
       }).catch(err => this.logger.error(`Persist failed: ${err.message}`));
     }
 
-    if (state.totalExpenses > 10_000) {
-      this.addInsight(tenantId, { type: 'expense_spike', severity: 'critical', message: `Total expenses exceeded €10,000. Current: €${state.totalExpenses.toFixed(2)}`, data: { current: state.totalExpenses } });
+    // Fire-and-forget embedding — does not block the HTTP response to Ledger
+    if (this.embedder && this.vectorStore?.isReady) {
+      this.indexJournalChunk(event, text).catch(err =>
+        this.logger.warn(`Journal embedding failed (non-fatal): ${err?.message}`),
+      );
     }
-    // Storno/correction heuristics intentionally removed: AI must not infer or label stornos.
+
+    if (state.totalExpenses > 10_000) {
+      this.addInsight(tenantId, {
+        type:    'expense_spike',
+        severity:'critical',
+        message: `Total expenses exceeded €10,000. Current: €${state.totalExpenses.toFixed(2)}`,
+        data:    { current: state.totalExpenses },
+      });
+    }
+  }
+
+  // ── Public query API ─────────────────────────────────────────────────────
+
+  processNaturalLanguageQuery(tenantId: string, query: string) {
+    return this.answerWithRag(tenantId, query);
   }
 
   getSnapshot(tenantId: string) {
     const state = this.stateFor(tenantId);
-    return { totalExpenses: state.totalExpenses, netExpenses: state.totalExpenses, entryCount: state.entryCount, lastUpdated: state.lastUpdated || new Date().toISOString(), insights: state.insights.slice(0, 10) };
+    return {
+      totalExpenses: state.totalExpenses,
+      netExpenses:   state.totalExpenses,
+      entryCount:    state.entryCount,
+      lastUpdated:   state.lastUpdated || new Date().toISOString(),
+      insights:      state.insights.slice(0, 10),
+    };
   }
 
-  getInsights(tenantId: string, limit = 20): FinancialInsight[] { return this.stateFor(tenantId).insights.slice(0, limit); }
-  getHistory(tenantId: string)                                 { return [...this.stateFor(tenantId).history]; }
-
-  processNaturalLanguageQuery(tenantId: string, query: string) {
-    return this.answerWithGeminiAndDatabases(tenantId, query);
+  getInsights(tenantId: string, limit = 20): FinancialInsight[] {
+    return this.stateFor(tenantId).insights.slice(0, limit);
   }
 
-  private addInsight(tenantId: string, partial: Omit<FinancialInsight, 'id' | 'timestamp'>): void {
-    const state = this.stateFor(tenantId);
-    state.insights.unshift({ id: `insight-${++state.insightCounter}`, timestamp: new Date().toISOString(), ...partial });
-    if (state.insights.length > 100) state.insights.length = 100;
+  getHistory(tenantId: string) {
+    return [...this.stateFor(tenantId).history];
   }
 
-  private async answerWithGeminiAndDatabases(tenantId: string, query: string) {
-    const state = this.stateFor(tenantId);
-    const inferredTargets = this.inferDatabaseTargets(query);
-    const dbFindings = await Promise.all(inferredTargets.map(t => this.inspectDatabase(t, tenantId, query)));
-    const successful = dbFindings.filter(f => f.ok);
-    const failed = dbFindings.filter(f => !f.ok);
-    const reconciliation = this.extractLedgerReconciliation(successful);
+  // ── RAG pipeline ──────────────────────────────────────────────────────────
 
+  private async answerWithRag(tenantId: string, query: string) {
+    const state   = this.stateFor(tenantId);
     const summary = {
-      totalExpenses: typeof reconciliation?.totalAmount === 'number' ? reconciliation.totalAmount : state.totalExpenses,
-      entryCount: typeof reconciliation?.entryCount === 'number' ? reconciliation.entryCount : state.entryCount,
-      lastUpdated: state.lastUpdated,
+      totalExpenses: state.totalExpenses,
+      entryCount:    state.entryCount,
+      lastUpdated:   state.lastUpdated,
       recentInsights: state.insights.slice(0, 5),
     };
+    const fallbackSnapshot =
+      `Tenant ${tenantId}: total tracked expenses €${state.totalExpenses.toFixed(2)}, ` +
+      `${state.entryCount} journal entries, last updated ${state.lastUpdated || 'n/a'}.`;
 
-    const fallbackSnapshot = `Tenant ${tenantId} aggregates: totalExpenses=€${Number(summary.totalExpenses).toFixed(2)}, entryCount=${summary.entryCount}, lastUpdated=${summary.lastUpdated || 'n/a'}.`;
+    // ── Step 1: Embed the query ─────────────────────────────────────────────
+    let chunks: RagChunk[] = [];
+    if (this.embedder && this.vectorStore?.isReady) {
+      try {
+        const queryEmbedding = await this.embedder.embed(query, 'RETRIEVAL_QUERY');
+        chunks = await this.vectorStore.similaritySearch(queryEmbedding, tenantId, 8);
+      } catch (err: any) {
+        this.logger.warn(`RAG retrieval failed (non-fatal): ${err.message}`);
+      }
+    }
 
+    // ── Step 2: Augment ────────────────────────────────────────────────────
+    const retrievedContext = chunks.length > 0
+      ? chunks
+          .map((c, i) =>
+            `[${i + 1}] source:${c.source} relevance:${(c.score ?? 0).toFixed(3)}\n${c.content}`,
+          )
+          .join('\n\n')
+      : '(No vector context retrieved — answer from financial summary only.)';
+
+    const prompt = [
+      'You are a financial AI analyst for Guri Finance, a Kosovo ERP system.',
+      'Answer ONLY from the provided retrieved context and financial summary below.',
+      'Never fabricate account codes, amounts, legal references, or transaction details.',
+      'Tenant isolation is strict — data in this context belongs exclusively to this tenant.',
+      'Reference specific SKA account codes (e.g. 665-05, 700, 220) when relevant.',
+      'If the retrieved context is insufficient to answer, say so explicitly.',
+      '',
+      `=== FINANCIAL SUMMARY (tenant: ${tenantId}) ===`,
+      `Total expenses tracked : €${summary.totalExpenses.toFixed(2)}`,
+      `Journal entry count    : ${summary.entryCount}`,
+      `Last updated           : ${summary.lastUpdated || 'no data yet'}`,
+      '',
+      `=== RETRIEVED CONTEXT (${chunks.length} chunk${chunks.length !== 1 ? 's' : ''} via RAG) ===`,
+      retrievedContext,
+      '',
+      '=== USER QUESTION ===',
+      query,
+    ].join('\n');
+
+    // ── Step 3: Fallback without API key ────────────────────────────────────
     if (!this.geminiApiKey) {
       return {
         query,
-        answer: `AI model is not configured (missing GEMINI_API_KEY). ${fallbackSnapshot}`,
-        confidence: 0.35,
-        sources: [...successful.map(s => `db:${s.target.name}`), 'local_aggregate_fallback'],
+        answer:      `GEMINI_API_KEY not configured. ${fallbackSnapshot}`,
+        confidence:  0.35,
+        sources:     chunks.map(c => `${c.source}:${c.metadata?.key ?? c.id}`),
+        ragChunks:   chunks.length,
         generatedAt: new Date().toISOString(),
       };
     }
 
-    const contextBlob = JSON.stringify({
-      question: query,
-      tenantId,
-      reconciliation,
-      localSummary: summary,
-      successfulDatabases: successful,
-      failedDatabases: failed.map(f => ({ db: f.target.name, error: f.error })),
-    });
-
+    // ── Step 4: Generate ────────────────────────────────────────────────────
     try {
-      const answer = await this.callGemini(contextBlob);
+      const answer = await this.callGemini(prompt);
       return {
         query,
         answer,
-        confidence: successful.length > 0 ? 0.9 : 0.7,
-        sources: [...successful.map(s => `db:${s.target.name}`), `model:${this.geminiModel}`],
+        confidence:  chunks.length > 0 ? 0.9 : 0.6,
+        sources:     [
+          ...chunks.map(c => `${c.source}:${c.metadata?.key ?? c.id}`),
+          `model:${this.geminiModel}`,
+        ],
+        ragChunks:   chunks.length,
         generatedAt: new Date().toISOString(),
       };
     } catch (err: any) {
-      this.logger.warn(`Gemini call failed: ${err?.message || 'unknown error'}`);
+      this.logger.warn(`Gemini generation failed: ${err.message}`);
       return {
         query,
-        answer: `Could not get model response right now. ${fallbackSnapshot}`,
-        confidence: 0.4,
-        sources: [...successful.map(s => `db:${s.target.name}`), 'model_error_fallback'],
+        answer:      `Model unavailable. ${fallbackSnapshot}`,
+        confidence:  0.4,
+        sources:     chunks.map(c => `${c.source}:${c.metadata?.key ?? c.id}`),
+        ragChunks:   chunks.length,
         generatedAt: new Date().toISOString(),
       };
     }
   }
 
-  private inferDatabaseTargets(query: string): DbTarget[] {
-    const q = query.toLowerCase();
-    const all = this.getConfiguredTargets();
-    const matches = new Set<string>();
+  // ── Indexing helpers ──────────────────────────────────────────────────────
 
-    if (/(auth|user|tenant|role|permission|login|jwt)/.test(q)) matches.add('iam');
-    if (/(bill|invoice|inventory|operation)/.test(q)) matches.add('operations');
-    if (/(ledger|journal|trial|balance|debit|credit|accounting|report|p\&l|profit|loss)/.test(q)) matches.add('ledger');
-    if (/(ai|insight|analysis|anomaly|trend|snapshot)/.test(q)) matches.add('ai');
-
-    const selected = all.filter(t => matches.has(t.name));
-    if (selected.length > 0) return selected;
-    return all;
+  /**
+   * Build a human-readable text representation of a journal event.
+   * This is the text that gets embedded and stored in the vector store.
+   * Rich descriptions improve retrieval quality significantly.
+   */
+  private buildJournalChunkText(event: JournalEntryPostedEvent): string {
+    const absAmount  = Math.abs(event.deltaExpenses);
+    const isStorno   = event.deltaExpenses < 0;
+    const entryKind  = isStorno ? 'Storno (reversal) journal entry' : 'Journal entry';
+    return [
+      `${entryKind} posted for reference ${event.reference} on ${event.date}.`,
+      `Amount: €${absAmount.toFixed(2)}.`,
+      isStorno
+        ? `This is a compensating storno entry that reverses a previously posted transaction.`
+        : `This records a new financial transaction.`,
+      `Tenant: ${event.tenantId}.`,
+      `Journal entry ID: ${event.journalEntryId}.`,
+    ].join(' ');
   }
 
-  private getConfiguredTargets(): DbTarget[] {
-    const targets: DbTarget[] = [
+  /** Embed and store a journal entry chunk in the vector store. */
+  private async indexJournalChunk(
+    event: JournalEntryPostedEvent,
+    text: string,
+  ): Promise<void> {
+    if (!this.embedder || !this.vectorStore?.isReady) return;
+    const embedding = await this.embedder.embed(text, 'RETRIEVAL_DOCUMENT');
+    await this.vectorStore.upsertChunk(
       {
-        name: 'iam',
-        host: process.env.IAM_DB_HOST || 'iam-postgres',
-        port: Number(process.env.IAM_DB_PORT || '5432'),
-        user: process.env.IAM_DB_USER || 'guri_iam',
-        password: process.env.IAM_DB_PASSWORD || 'localdev',
-        database: process.env.IAM_DB_NAME || 'guri_iam',
+        id:       event.journalEntryId,        // stable — same entry won't be re-indexed
+        tenantId: event.tenantId || 'public',
+        source:   'journal_entry',
+        content:  text,
+        metadata: {
+          reference: event.reference,
+          date:      event.date,
+          amount:    event.deltaExpenses,
+        },
       },
-      {
-        name: 'operations',
-        host: process.env.OPS_DB_HOST || 'ops-postgres',
-        port: Number(process.env.OPS_DB_PORT || '5432'),
-        user: process.env.OPS_DB_USER || 'guri_ops',
-        password: process.env.OPS_DB_PASSWORD || 'localdev',
-        database: process.env.OPS_DB_NAME || 'guri_operations',
-      },
-      {
-        name: 'ledger',
-        host: process.env.LEDGER_DB_HOST || 'ledger-postgres',
-        port: Number(process.env.LEDGER_DB_PORT || '5432'),
-        user: process.env.LEDGER_DB_USER || 'guri_ledger',
-        password: process.env.LEDGER_DB_PASSWORD || 'localdev',
-        database: process.env.LEDGER_DB_NAME || 'guri_ledger',
-      },
-      {
-        name: 'ai',
-        host: process.env.AI_DB_HOST || 'ai-postgres',
-        port: Number(process.env.AI_DB_PORT || '5432'),
-        user: process.env.AI_DB_USER || 'guri_ai',
-        password: process.env.AI_DB_PASSWORD || 'localdev',
-        database: process.env.AI_DB_NAME || 'guri_ai',
-      },
-    ];
-
-    return targets.filter(t => !!t.host && !!t.database && !!t.user);
+      embedding,
+    );
   }
 
-  private async inspectDatabase(target: DbTarget, tenantId: string, query: string): Promise<DbInspectionResult> {
-    const client = new Client({
-      host: target.host,
-      port: target.port,
-      user: target.user,
-      password: target.password,
-      database: target.database,
-      connectionTimeoutMillis: 3000,
-      query_timeout: 4000,
-    });
+  // ── Gemini generate ───────────────────────────────────────────────────────
 
-    try {
-      await client.connect();
-      const tablesRes = await client.query<{ table_schema: string; table_name: string }>(
-        `SELECT table_schema, table_name
-         FROM information_schema.tables
-         WHERE table_type = 'BASE TABLE' AND table_schema = 'public'
-         ORDER BY table_name`,
-      );
-
-      const tableNames = tablesRes.rows.map((r: { table_schema: string; table_name: string }) => r.table_name);
-      const tokens = (query.toLowerCase().match(/[a-z0-9_\-]+/g) || []).filter(t => t.length >= 3);
-      const relevant = tableNames
-        .filter((t: string) => tokens.some(tok => t.includes(tok) || tok.includes(t)))
-        .slice(0, 5);
-      const selectedTables = (relevant.length > 0 ? relevant : tableNames.slice(0, 3)).slice(0, 5);
-
-      const tableSamples: Array<{ table: string; approxRows: number; sample: any[] }> = [];
-      const tableSummaries: Array<{ table: string; metrics: Record<string, any> }> = [];
-      const skippedTables: Array<{ table: string; reason: string }> = [];
-      for (const table of selectedTables) {
-        const safe = this.quoteIdent(table);
-        const colsRes = await client.query<{ column_name: string }>(
-          `SELECT column_name
-             FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = $1`,
-          [table],
-        );
-        const tenantColumn = this.pickTenantColumn(colsRes.rows.map((c: { column_name: string }) => c.column_name));
-        if (!tenantColumn) {
-          skippedTables.push({ table, reason: 'no tenant column' });
-          continue;
-        }
-
-        const tenantSafe = this.quoteIdent(tenantColumn);
-        const columns = colsRes.rows.map((c: { column_name: string }) => c.column_name);
-        const orderByColumn = columns.includes('createdAt') ? 'createdAt' : (columns.includes('date') ? 'date' : null);
-        const approxRes = await client.query<{ estimate: number }>(
-          `SELECT COALESCE((
-              SELECT reltuples::bigint
-              FROM pg_class c
-              JOIN pg_namespace n ON n.oid = c.relnamespace
-              WHERE n.nspname = 'public' AND c.relname = $1
-            ), 0) AS estimate`,
-          [table],
-        );
-
-        const orderSql = orderByColumn ? ` ORDER BY ${this.quoteIdent(orderByColumn)} DESC` : '';
-        const sampleRes = await client.query<{ row: any }>(
-          `SELECT row_to_json(t) AS row
-             FROM (
-               SELECT *
-                 FROM public.${safe}
-                WHERE ${tenantSafe} = $1
-                ${orderSql}
-                LIMIT 3
-             ) t`,
-          [tenantId],
-        );
-
-        const normalizedSample = sampleRes.rows.map((r: { row: any }) => this.normalizeSampleRow(table, r.row));
-        tableSamples.push({
-          table,
-          approxRows: Number(approxRes.rows[0]?.estimate || 0),
-          sample: normalizedSample,
-        });
-
-        if (table === 'ledger_journal_entries') {
-          const totals = await client.query<{ entry_count: string; total_amount: string }>(
-            `SELECT COUNT(*)::text AS entry_count,
-                    COALESCE(SUM(amount), 0)::text AS total_amount,
-                    0::text AS storno_count
-               FROM public.${safe}
-              WHERE ${tenantSafe} = $1`,
-            [tenantId],
-          );
-
-          const debitCredit = await client.query<{ total_debits: string; total_credits: string }>(
-            `SELECT COALESCE(SUM((line->>'debit')::numeric), 0)::text AS total_debits,
-                    COALESCE(SUM((line->>'credit')::numeric), 0)::text AS total_credits
-               FROM public.${safe} t
-               CROSS JOIN LATERAL jsonb_array_elements(t.lines) AS line
-              WHERE ${tenantSafe} = $1`,
-            [tenantId],
-          );
-
-          tableSummaries.push({
-            table,
-            metrics: {
-              entryCount: Number(totals.rows[0]?.entry_count || 0),
-              totalAmount: Number(totals.rows[0]?.total_amount || 0),
-              stornoCount: 0,
-              totalDebits: Number(debitCredit.rows[0]?.total_debits || 0),
-              totalCredits: Number(debitCredit.rows[0]?.total_credits || 0),
-              netBalance: Number(debitCredit.rows[0]?.total_debits || 0) - Number(debitCredit.rows[0]?.total_credits || 0),
-            },
-          });
-        }
-      }
-
-      return {
-        ok: true,
-        target,
-        tableCount: tableNames.length,
-        selectedTables,
-        tableSamples,
-        tableSummaries,
-        skippedTables,
-      };
-    } catch (err: any) {
-      return {
-        ok: false,
-        target,
-        error: err?.message || 'database inspection failed',
-      };
-    } finally {
-      await client.end().catch(() => {});
-    }
-  }
-
-  private quoteIdent(input: string): string {
-    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(input)) throw new Error(`Unsafe identifier: ${input}`);
-    return `"${input}"`;
-  }
-
-  private pickTenantColumn(columns: string[]): string | null {
-    if (columns.includes('tenantId')) return 'tenantId';
-    if (columns.includes('tenant_id')) return 'tenant_id';
-    return null;
-  }
-
-  private normalizeSampleRow(table: string, row: any): any {
-    if (table !== 'ledger_journal_entries' || !row || !Array.isArray(row.lines)) return row;
-    return {
-      ...row,
-      lines: row.lines.map((l: any) => ({
-        ...l,
-        account: LEGACY_TO_SKA_ACCOUNT[String(l?.account || '')] || l?.account,
-      })),
-    };
-  }
-
-  private extractLedgerReconciliation(results: DbInspectionResult[]): Record<string, any> | null {
-    const ledger = results.find(r => r.target.name === 'ledger');
-    if (!ledger?.tableSummaries?.length) return null;
-    const summary = ledger.tableSummaries.find(s => s.table === 'ledger_journal_entries');
-    return summary ? summary.metrics : null;
-  }
-
-  private async callGemini(contextBlob: string): Promise<string> {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${this.geminiModel}:generateContent?key=${this.geminiApiKey}`;
-    const prompt = [
-      'You are a finance AI analyst for a Kosovo ERP system.',
-      'Use only the provided database context and local aggregates.',
-      'Never infer or mix data across tenants. Tenant isolation is strict.',
-      'If reconciliation metrics from ledger are present, treat them as the source of truth over stale local aggregates.',
-      'Use Kosovo-normalized SKA account codes when referring to accounts.',
-      'Be precise, mention assumptions and data gaps, and provide concise practical next steps.',
-      '',
-      contextBlob,
-    ].join('\n');
+  private async callGemini(prompt: string): Promise<string> {
+    const endpoint =
+      `https://generativelanguage.googleapis.com/v1beta/models/` +
+      `${this.geminiModel}:generateContent?key=${this.geminiApiKey}`;
 
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -404,8 +326,8 @@ export class AiService implements OnModuleInit {
       body: JSON.stringify({
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: {
-          temperature: 0.2,
-          topP: 0.9,
+          temperature:    0.2,
+          topP:           0.9,
           maxOutputTokens: 1024,
         },
       }),
@@ -417,45 +339,35 @@ export class AiService implements OnModuleInit {
     }
 
     const json: any = await res.json();
-    const parts = json?.candidates?.[0]?.content?.parts;
-    const text = Array.isArray(parts) ? parts.map((p: any) => p?.text || '').join('\n').trim() : '';
+    const parts      = json?.candidates?.[0]?.content?.parts;
+    const text       = Array.isArray(parts)
+      ? parts.map((p: any) => p?.text ?? '').join('\n').trim()
+      : '';
     if (!text) throw new Error('Gemini returned empty response');
     return text;
   }
 
+  // ── Internal helpers ──────────────────────────────────────────────────────
+
+  private addInsight(tenantId: string, partial: Omit<FinancialInsight, 'id' | 'timestamp'>): void {
+    const state = this.stateFor(tenantId);
+    state.insights.unshift({
+      id:        `insight-${++state.insightCounter}`,
+      timestamp: new Date().toISOString(),
+      ...partial,
+    });
+    if (state.insights.length > 100) state.insights.length = 100;
+  }
+
   private stateFor(tenantId: string): TenantState {
-    const key = tenantId || 'public';
+    const key      = tenantId || 'public';
     const existing = this.tenantStates.get(key);
     if (existing) return existing;
     const created: TenantState = {
-      totalExpenses: 0,
-      entryCount: 0,
-      lastUpdated: '',
-      insightCounter: 0,
-      insights: [],
-      history: [],
+      totalExpenses: 0, entryCount: 0, lastUpdated: '',
+      insightCounter: 0, insights: [], history: [],
     };
     this.tenantStates.set(key, created);
     return created;
   }
-}
-
-interface DbTarget {
-  name: 'iam' | 'operations' | 'ledger' | 'ai';
-  host: string;
-  port: number;
-  user: string;
-  password: string;
-  database: string;
-}
-
-interface DbInspectionResult {
-  ok: boolean;
-  target: DbTarget;
-  tableCount?: number;
-  selectedTables?: string[];
-  tableSamples?: Array<{ table: string; approxRows: number; sample: any[] }>;
-  tableSummaries?: Array<{ table: string; metrics: Record<string, any> }>;
-  skippedTables?: Array<{ table: string; reason: string }>;
-  error?: string;
 }

@@ -86,7 +86,7 @@ export class BillService {
       summary: `Bill ${bill.id} reverted via storno. Reason: ${reason || 'n/a'}`
     });
     this.domainEventBus.publish({
-      type: 'billReverted',
+      type: 'billRevertRequested',
       originalReference: `Bill-${bill.id}`,
       billId: bill.id,
       date: new Date().toISOString(),

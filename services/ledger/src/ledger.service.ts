@@ -12,7 +12,8 @@ interface EventMeta { eventId?: string; idempotencyKey?: string; occurredAt?: st
 
 /** Events consumed from Operations Service via HTTP POST to /api/v1/ledger/events */
 export interface BillPostedEvent extends EventMeta   { type: 'billPosted'; tenantId: string; billId: string; supplierId: string; totalNetAmount: number; date: string; originalReference: string; }
-export interface BillRevertedEvent extends EventMeta { type: 'billReverted'; tenantId: string; billId: string; originalReference: string; date: string; reason?: string; }
+/** Saga step 1 (inbound): Operations requests a STORNO entry. Ledger replies with stornoPosted or stornoFailed. */
+export interface BillRevertRequestedEvent extends EventMeta { type: 'billRevertRequested'; tenantId: string; billId: string; originalReference: string; date: string; reason?: string; }
 export interface BillPaidEvent extends EventMeta     { type: 'billPaid'; tenantId: string; billId: string; totalNetAmount: number; date: string; originalReference: string; }
 export interface InvoiceCreatedEvent extends EventMeta {
   type: 'invoiceCreated';
@@ -40,8 +41,9 @@ export interface InvoicePaidEvent {
   date: string;
   originalReference: string;
 }
-export interface InvoiceRevertedEvent {
-  type: 'invoiceReverted';
+/** Saga step 1 (inbound): Operations requests a STORNO entry for an invoice. */
+export interface InvoiceRevertRequestedEvent {
+  type: 'invoiceRevertRequested';
   tenantId: string;
   invoiceId: string;
   date: string;
@@ -62,12 +64,12 @@ export interface InventoryMovementRecordedEvent {
 }
 export type IncomingEvent =
   | BillPostedEvent
-  | BillRevertedEvent
+  | BillRevertRequestedEvent
   | BillPaidEvent
   | InvoiceCreatedEvent
   | InvoiceSentEvent
   | InvoicePaidEvent
-  | InvoiceRevertedEvent
+  | InvoiceRevertRequestedEvent
   | InventoryMovementRecordedEvent;
 
 const SKA = {
@@ -147,13 +149,13 @@ export class LedgerService implements OnModuleInit, OnModuleDestroy {
 
   async handleEvent(event: IncomingEvent): Promise<void> {
     if (!(await this.shouldProcess(event))) return;
-    if (event.type === 'billPosted')   await this.onBillPosted(event);
-    if (event.type === 'billReverted') await this.onBillReverted(event);
-    if (event.type === 'billPaid') await this.onBillPaid(event);
-    if (event.type === 'invoiceCreated') await this.onInvoiceCreated(event);
-    if (event.type === 'invoiceSent') await this.onInvoiceSent(event);
-    if (event.type === 'invoicePaid') await this.onInvoicePaid(event);
-    if (event.type === 'invoiceReverted') await this.onInvoiceReverted(event);
+    if (event.type === 'billPosted')              await this.onBillPosted(event);
+    if (event.type === 'billRevertRequested')     await this.onBillRevertRequested(event);
+    if (event.type === 'billPaid')                await this.onBillPaid(event);
+    if (event.type === 'invoiceCreated')          await this.onInvoiceCreated(event);
+    if (event.type === 'invoiceSent')             await this.onInvoiceSent(event);
+    if (event.type === 'invoicePaid')             await this.onInvoicePaid(event);
+    if (event.type === 'invoiceRevertRequested')  await this.onInvoiceRevertRequested(event);
     if (event.type === 'inventoryMovementRecorded') await this.onInventoryMovementRecorded(event);
   }
 
@@ -342,9 +344,20 @@ export class LedgerService implements OnModuleInit, OnModuleDestroy {
     await this.notifyAi({ type: 'journalEntryPosted', tenantId: event.tenantId, journalEntryId: entry.id, reference: entry.reference, date: entry.date, deltaExpenses: event.totalNetAmount });
   }
 
-  private async onBillReverted(event: BillRevertedEvent): Promise<void> {
+  /** Saga step 2: attempt to post STORNO, then reply to Operations with stornoPosted or stornoFailed. */
+  private async onBillRevertRequested(event: BillRevertRequestedEvent): Promise<void> {
     const original = this.mem.find(e => e.tenantId === event.tenantId && e.reference === event.originalReference && e.kind === 'ORIGINAL' && !e.reversedBy);
-    if (!original) { this.logger.warn(`No original journal entry found for ${event.originalReference}`); return; }
+    if (!original) {
+      this.logger.warn(`Saga: no original journal entry found for ${event.originalReference} — publishing stornoFailed`);
+      await this.publishSagaReply({
+        type: 'stornoFailed',
+        tenantId: event.tenantId,
+        originalReference: event.originalReference,
+        sourceType: 'bill',
+        error: `No unreverted ORIGINAL journal entry found for reference ${event.originalReference}`,
+      });
+      return;
+    }
 
     const storno: JournalEntry = {
       id: uuidv4(), tenantId: event.tenantId, reference: event.originalReference, date: event.date, kind: 'STORNO',
@@ -355,8 +368,16 @@ export class LedgerService implements OnModuleInit, OnModuleDestroy {
     this.mem.push(storno);
     await this.persist(storno);
     if (this.orm) await this.orm.update(original.id, { reversedBy: storno.id }).catch(() => {});
-    this.logger.log(`Storno entry created for ${event.originalReference}`);
+    this.logger.log(`Saga: STORNO entry created for ${event.originalReference} — publishing stornoPosted`);
+
     await this.notifyAi({ type: 'journalEntryPosted', tenantId: event.tenantId, journalEntryId: storno.id, reference: storno.reference, date: storno.date, deltaExpenses: -original.amount });
+    await this.publishSagaReply({
+      type: 'stornoPosted',
+      tenantId: event.tenantId,
+      originalReference: event.originalReference,
+      stornoEntryId: storno.id,
+      sourceType: 'bill',
+    });
   }
 
   private async onInvoiceSent(event: InvoiceSentEvent): Promise<void> {
@@ -401,9 +422,21 @@ export class LedgerService implements OnModuleInit, OnModuleDestroy {
     await this.persist(entry);
   }
 
-  private async onInvoiceReverted(event: InvoiceRevertedEvent): Promise<void> {
+  /** Saga step 2 (invoice): attempt to post STORNO, then reply to Operations with stornoPosted or stornoFailed. */
+  private async onInvoiceRevertRequested(event: InvoiceRevertRequestedEvent): Promise<void> {
     const original = this.mem.find(e => e.tenantId === event.tenantId && e.reference === event.originalReference && e.kind === 'ORIGINAL' && !e.reversedBy);
-    if (!original) return;
+    if (!original) {
+      this.logger.warn(`Saga: no original journal entry found for ${event.originalReference} — publishing stornoFailed`);
+      await this.publishSagaReply({
+        type: 'stornoFailed',
+        tenantId: event.tenantId,
+        originalReference: event.originalReference,
+        sourceType: 'invoice',
+        error: `No unreverted ORIGINAL journal entry found for reference ${event.originalReference}`,
+      });
+      return;
+    }
+
     const storno: JournalEntry = {
       id: uuidv4(), tenantId: event.tenantId, reference: event.originalReference, date: event.date, kind: 'STORNO', amount: original.amount,
       lines: original.lines.map(l => ({ account: l.account, debit: l.credit, credit: l.debit })),
@@ -412,6 +445,15 @@ export class LedgerService implements OnModuleInit, OnModuleDestroy {
     this.mem.push(storno);
     await this.persist(storno);
     if (this.orm) await this.orm.update(original.id, { reversedBy: storno.id }).catch(() => {});
+    this.logger.log(`Saga: STORNO entry created for ${event.originalReference} — publishing stornoPosted`);
+
+    await this.publishSagaReply({
+      type: 'stornoPosted',
+      tenantId: event.tenantId,
+      originalReference: event.originalReference,
+      stornoEntryId: storno.id,
+      sourceType: 'invoice',
+    });
   }
 
   private async onInventoryMovementRecorded(event: InventoryMovementRecordedEvent): Promise<void> {
@@ -458,6 +500,41 @@ export class LedgerService implements OnModuleInit, OnModuleDestroy {
       await axios.post(`${this.aiUrl}/api/v1/ai/events`, payload, { timeout: 3000 });
     } catch (err: any) {
       this.logger.warn(`Failed to notify AI Service: ${err.message}`);
+    }
+  }
+
+  /**
+   * Publish a saga reply event (stornoPosted | stornoFailed) to ledger.events.
+   * Operations' KafkaLedgerSagaConsumer listens on this topic to complete or compensate.
+   * Falls back to HTTP if Kafka is unavailable.
+   */
+  private async publishSagaReply(payload: {
+    type: 'stornoPosted' | 'stornoFailed';
+    tenantId: string;
+    originalReference: string;
+    sourceType: 'bill' | 'invoice';
+    stornoEntryId?: string;
+    error?: string;
+  }): Promise<void> {
+    if (this.producer) {
+      try {
+        await this.producer.send({
+          topic: this.ledgerTopic,
+          messages: [{ key: payload.tenantId, value: JSON.stringify(payload) }],
+        });
+        return;
+      } catch (err: any) {
+        this.logger.warn(`Failed to publish saga reply via Kafka: ${err.message}`);
+      }
+    }
+
+    // HTTP fallback: POST directly to Operations saga callback endpoint
+    const opsUrl = process.env.OPERATIONS_SERVICE_URL || 'http://operations:3003';
+    try {
+      const axios = (await import('axios')).default;
+      await axios.post(`${opsUrl}/api/v1/operations/saga/storno-reply`, payload, { timeout: 3000 });
+    } catch (err: any) {
+      this.logger.warn(`Failed to deliver saga reply via HTTP fallback: ${err.message}`);
     }
   }
 

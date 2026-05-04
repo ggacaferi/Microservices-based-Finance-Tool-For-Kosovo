@@ -11,7 +11,7 @@ import { IamTenantLookupService } from '../../integrations/iam-tenant.lookup';
 import { EdiInboxService } from '../edi/edi-inbox.service';
 import type { CreateInvoiceDto } from './dto/create-invoice.dto';
 
-export enum InvoiceStatus { Draft = 'DRAFT', Sent = 'SENT', Paid = 'PAID', Reverted = 'REVERTED' }
+export enum InvoiceStatus { Draft = 'DRAFT', Sent = 'SENT', Paid = 'PAID', Reversing = 'REVERSING', Reverted = 'REVERTED' }
 
 export interface InvoiceLine { description: string; quantity: number; unitPrice: number; accountCode: string; isInventoryItem?: boolean; sku?: string; }
 
@@ -206,18 +206,40 @@ export class InvoiceService implements OnModuleInit {
     const invoice = this.getById(tenantId, id);
     if (invoice.status !== InvoiceStatus.Sent && invoice.status !== InvoiceStatus.Paid)
       throw new Error('Storno is allowed only for SENT or PAID invoices');
-    invoice.status = InvoiceStatus.Reverted;
+    // Saga step 1: commit REVERSING, then request Ledger to post the STORNO entry.
+    invoice.status = InvoiceStatus.Reversing;
     await this.persist(tenantId, invoice);
     await this.eventPublisher.publish({
-      type: 'invoiceReverted',
+      type: 'invoiceRevertRequested',
       tenantId,
       invoiceId: invoice.id,
       date: new Date().toISOString(),
       originalReference: `Invoice-${invoice.id}`,
       reason,
     });
-    this.activityLogService.record(tenantId, 'INVOICE_STORNO', { entityId: invoice.id, summary: `Invoice ${invoice.id} reverted. Reason: ${reason || 'n/a'}` });
+    this.activityLogService.record(tenantId, 'INVOICE_STORNO_REQUESTED', { entityId: invoice.id, summary: `Invoice ${invoice.id} reversal requested. Reason: ${reason || 'n/a'}` });
     return invoice;
+  }
+
+  /** Saga step 2 (success path): Ledger confirmed STORNO was posted → finalise as REVERTED. */
+  async handleStornoPosted(tenantId: string, originalReference: string): Promise<void> {
+    const invoiceId = originalReference.startsWith('Invoice-') ? originalReference.slice(8) : originalReference;
+    const invoice = this.items.get(this.key(tenantId, invoiceId));
+    if (!invoice || invoice.status !== InvoiceStatus.Reversing) return;
+    invoice.status = InvoiceStatus.Reverted;
+    await this.persist(tenantId, invoice);
+    this.activityLogService.record(tenantId, 'INVOICE_STORNO_CONFIRMED', { entityId: invoice.id, summary: `Invoice ${invoice.id} storno confirmed by Ledger` });
+  }
+
+  /** Saga compensating transaction: Ledger could not post STORNO → roll invoice back to prior status. */
+  async handleStornoFailed(tenantId: string, originalReference: string, error: string): Promise<void> {
+    const invoiceId = originalReference.startsWith('Invoice-') ? originalReference.slice(8) : originalReference;
+    const invoice = this.items.get(this.key(tenantId, invoiceId));
+    if (!invoice || invoice.status !== InvoiceStatus.Reversing) return;
+    // Restore to Sent (most likely prior state for a storno candidate)
+    invoice.status = InvoiceStatus.Sent;
+    await this.persist(tenantId, invoice);
+    this.activityLogService.record(tenantId, 'INVOICE_STORNO_COMPENSATED', { entityId: invoice.id, summary: `Invoice ${invoice.id} reversal failed (${error}); rolled back to SENT` });
   }
 
   get(tenantId: string, id: string): InvoiceRecord { return this.getById(tenantId, id); }

@@ -4,7 +4,7 @@ import { Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 import {
   BillPostedEvent,
-  BillRevertedEvent,
+  BillRevertRequestedEvent,
   DomainEventBus,
   JournalEntryPostedEvent
 } from '../events/domain-event.bus';
@@ -59,7 +59,7 @@ export class LedgerIntegrationService implements OnModuleInit {
 
   onModuleInit(): void {
     this.domainEventBus.subscribe('billPosted', (event) => this.onBillPosted(event));
-    this.domainEventBus.subscribe('billReverted', (event) => this.onBillReverted(event));
+    this.domainEventBus.subscribe('billRevertRequested', (event) => this.onBillRevertRequested(event));
   }
 
   getEntriesForReference(reference: string): JournalEntry[] {
@@ -166,7 +166,7 @@ export class LedgerIntegrationService implements OnModuleInit {
     this.domainEventBus.publish(journalEvent);
   }
 
-  private onBillReverted(event: BillRevertedEvent): void {
+  private onBillRevertRequested(event: BillRevertRequestedEvent): void {
     const original = this.entries.find(
       (entry) =>
         entry.reference === event.originalReference &&

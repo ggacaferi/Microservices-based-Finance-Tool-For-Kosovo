@@ -8,7 +8,8 @@ import { OutboxEventOrmEntity } from '../infrastructure/persistence/events/outbo
 interface EventMeta { eventId?: string; idempotencyKey?: string; occurredAt?: string; }
 
 export interface BillPostedEvent extends EventMeta   { type: 'billPosted'; tenantId: string; billId: string; supplierId: string; totalNetAmount: number; date: string; originalReference: string; }
-export interface BillRevertedEvent extends EventMeta { type: 'billReverted'; tenantId: string; billId: string; originalReference: string; date: string; reason?: string; }
+/** Saga step 1: Operations requests Ledger to post a STORNO entry. */
+export interface BillRevertRequestedEvent extends EventMeta { type: 'billRevertRequested'; tenantId: string; billId: string; originalReference: string; date: string; reason?: string; }
 export interface BillPaidEvent extends EventMeta     { type: 'billPaid'; tenantId: string; billId: string; totalNetAmount: number; date: string; originalReference: string; }
 export interface InvoiceCreatedEvent extends EventMeta {
   type: 'invoiceCreated';
@@ -36,8 +37,9 @@ export interface InvoicePaidEvent {
   date: string;
   originalReference: string;
 }
-export interface InvoiceRevertedEvent {
-  type: 'invoiceReverted';
+/** Saga step 1: Operations requests Ledger to post a STORNO entry for an invoice. */
+export interface InvoiceRevertRequestedEvent {
+  type: 'invoiceRevertRequested';
   tenantId: string;
   invoiceId: string;
   date: string;
@@ -58,12 +60,12 @@ export interface InventoryMovementRecordedEvent {
 }
 export type DomainEvent =
   | BillPostedEvent
-  | BillRevertedEvent
+  | BillRevertRequestedEvent
   | BillPaidEvent
   | InvoiceCreatedEvent
   | InvoiceSentEvent
   | InvoicePaidEvent
-  | InvoiceRevertedEvent
+  | InvoiceRevertRequestedEvent
   | InventoryMovementRecordedEvent;
 
 /**
@@ -227,12 +229,12 @@ export class CrossServiceEventPublisher implements OnModuleInit, OnModuleDestroy
   private resolveTargets(type: DomainEvent['type']): string[] {
     switch (type) {
       case 'billPosted':   return [`${this.ledgerUrl}/api/v1/ledger/events`];
-      case 'billReverted': return [`${this.ledgerUrl}/api/v1/ledger/events`];
+      case 'billRevertRequested': return [`${this.ledgerUrl}/api/v1/ledger/events`];
       case 'billPaid': return [`${this.ledgerUrl}/api/v1/ledger/events`];
       case 'invoiceCreated': return [`${this.ledgerUrl}/api/v1/ledger/events`];
       case 'invoiceSent': return [`${this.ledgerUrl}/api/v1/ledger/events`];
       case 'invoicePaid': return [`${this.ledgerUrl}/api/v1/ledger/events`];
-      case 'invoiceReverted': return [`${this.ledgerUrl}/api/v1/ledger/events`];
+      case 'invoiceRevertRequested': return [`${this.ledgerUrl}/api/v1/ledger/events`];
       case 'inventoryMovementRecorded': return [`${this.ledgerUrl}/api/v1/ledger/events`];
       default:             return [];
     }

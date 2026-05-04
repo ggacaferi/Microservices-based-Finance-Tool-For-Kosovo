@@ -3,6 +3,7 @@ import { BillService } from '../application/bills/bill.service';
 import { InvoiceService } from '../application/invoices/invoice.service';
 import { InventoryService } from '../application/inventory/inventory.service';
 import { ActivityLogService } from '../application/operations/activity-log.service';
+import { KafkaLedgerSagaConsumer } from './kafka-ledger-saga.consumer';
 
 @Controller('operations')
 export class OperationsController {
@@ -11,6 +12,7 @@ export class OperationsController {
     private readonly invoiceService: InvoiceService,
     private readonly inventoryService: InventoryService,
     private readonly activityLog: ActivityLogService,
+    private readonly sagaConsumer: KafkaLedgerSagaConsumer,
   ) {}
 
   private tenant(tenantId?: string): string { return tenantId || 'public'; }
@@ -27,7 +29,7 @@ export class OperationsController {
         id: bill.id, supplierId: bill.supplierId, issueDate: bill.issueDate,
         currency: bill.currency, status: bill.status, totalNetAmount: bill.totalNetAmount,
         lines: bill.lines.map((l: any) => ({ description: l.description, quantity: l.quantity, unitPrice: l.unitPrice, taxCategoryId: l.taxCategoryId, netAmount: l.netAmount })),
-        workflow: { event: { type: 'billReverted', payload: { OriginalReference: `Bill-${bill.id}`, Date: new Date().toISOString(), Reason: dto.reason } } },
+        workflow: { saga: { step: 1, status: 'REVERSING', note: 'Awaiting stornoPosted confirmation from Ledger' } },
       };
     }
     if (dto.entityType === 'invoice') {
@@ -35,5 +37,12 @@ export class OperationsController {
       return { ...invoice, totalNetAmount: this.invoiceService.totalNetAmount(invoice) };
     }
     return this.inventoryService.reverseMovement(tenantId, dto.entityId, dto.reason);
+  }
+
+  /** HTTP fallback endpoint for Ledger → Operations saga reply when Kafka is unavailable. */
+  @Post('saga/storno-reply')
+  async stornoSagaReply(@Body() dto: { type: 'stornoPosted' | 'stornoFailed'; tenantId: string; originalReference: string; sourceType: 'bill' | 'invoice'; stornoEntryId?: string; error?: string }) {
+    await this.sagaConsumer.handleReply(dto as any);
+    return { received: true };
   }
 }
