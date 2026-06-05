@@ -109,17 +109,6 @@ export const Layout: React.FC<LayoutProps> = ({ title, subtitle, contentFill, ch
             </div>
           </div>
           <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2">
-            <div className="relative hidden max-w-[min(100%,20rem)] md:block">
-              <span className="material-symbols-outlined pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[20px] text-slate-400">
-                search
-              </span>
-              <input
-                type="search"
-                readOnly
-                placeholder={tr('Global search…', 'Kërkim global…')}
-                className="w-full rounded-lg border border-slate-200 bg-slate-50 py-1.5 pl-9 pr-3 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
-              />
-            </div>
             <select
               className="select lang-select-compact max-w-full shrink-0"
               value={lang}

@@ -206,7 +206,15 @@ npm test
 npm run test:e2e
 npm run test:all
 npm run test:cov
+npm run test:cov:metrics
+npm run --prefix frontend test:cov
 ```
+
+### Coverage reports
+
+- Backend coverage summary: `npm run test:cov`
+- Backend coverage metrics: `npm run test:cov:metrics`
+- Frontend coverage summary: `npm run --prefix frontend test:cov`
 
 ## License
 
