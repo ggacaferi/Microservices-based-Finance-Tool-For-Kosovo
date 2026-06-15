@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Guri Finance — Code Defence Viva Question Bank</title>
+</head>
+<body>
+
+<h1>Guri Finance — Code Defence Viva Question Bank</h1>
+<p><i>Microservices-based Finance Tool for Kosovo. Questions are ordered from <b>most likely</b> to <b>least likely</b> to be asked. Each answer is written so you can defend a real design choice honestly — where the code has a known weakness, the answer names it and gives the production-grade fix, which is exactly what examiners reward.</i></p>
+
+<h2>How to use this document</h2>
+<p>Read top-to-bottom at least once. The early tiers (project framing, architecture, the event/saga flow, accounting correctness, and security) are where most marks are won or lost. For weaknesses, the winning move is always: <b>(1) acknowledge it, (2) explain why it was an acceptable trade-off for a final-year scope, (3) state the exact production fix.</b> Never pretend a known shortcut is secretly fine.</p>
+
+<hr>
+
+<h2>TIER 1 — Opening &amp; project framing (almost certain)</h2>
+
+<p><b>Q1. In one or two sentences, what is this project?</b><br>
+It is an event-driven accounting/ERP platform for Kosovo SMEs, built as six services (gateway, IAM, compliance, operations, ledger, AI) following Domain-Driven Design bounded contexts. It handles incoming bills (fatura hyrëse), sales invoices, inventory, and posts everything to a double-entry general ledger, with Kosovo VAT/SKA compliance rules and an AI assistant for natural-language financial questions.</p>
+
+<p><b>Q2. What real-world problem does it solve?</b><br>
+Kosovo SMEs need affordable accounting software that already understands local tax law (Law 06/L-032, the SKA standard chart of accounts, NUI business IDs, and EUR). Generic foreign tools don't encode Kosovo VAT categories or the reverse-charge rules, and hiring an accountant is expensive. The system automates double-entry posting and compliance validation so a non-accountant can run the books correctly.</p>
+
+<p><b>Q3. Why did you choose a microservices architecture rather than a monolith?</b><br>
+The domain splits cleanly into bounded contexts that change at different rates and have different scaling needs — the AI service is memory/CPU heavy and calls an external LLM, while compliance is read-mostly. Independent deployability lets me update tax rules without redeploying the ledger. I also wanted to demonstrate event-driven patterns (outbox, saga, idempotency) that only make sense across service boundaries.</p>
+
+<p><b>Q4. Be honest — is a microservices architecture actually justified for an SME tool, or is it over-engineering?</b><br>
+For the real-world user count it is arguably over-engineered; a modular monolith would serve the same SMEs with far less operational cost. I'd defend it on two grounds: the bounded contexts are genuine (different data ownership, different change cadence), and the project's academic goal is to demonstrate distributed-systems patterns. In fact the repo keeps a modular-monolith version under <code>src/</code> precisely to show the same domain can run either way — the split is a deployment decision, not a domain one.</p>
+
+<p><b>Q5. Why is there both a <code>src/</code> folder and a <code>services/</code> folder? Which one is "the system"?</b><br>
+<code>src/</code> is the original modular monolith — one Nest app wiring IAM, Compliance, and Operations modules together. <code>services/</code> is the extracted microservices version that docker-compose and Kubernetes actually deploy. They share the same domain model, demonstrating the "start as a modular monolith, extract services along bounded-context seams" strategy. The deployed system is <code>services/</code>; the monolith remains as a reference and as the target of the unit-test suite.</p>
+
+<p><b>Q6. Your Jest tests only collect coverage from <code>src/</code>, not <code>services/</code>. Isn't that a gap?</b><br>
+Yes, and I'd flag it openly. The domain logic in <code>src/</code> and <code>services/</code> is near-identical (aggregates, services were copied during extraction), so the unit tests exercise the same logic, but they don't test the service-specific wiring — the Kafka consumers, the outbox dispatcher, the saga reply handlers. Those are only covered by the e2e/integration specs. In a production setup each service would own its own test suite in its own package.</p>
+
+<p><b>Q7. What technologies did you use and why?</b><br>
+NestJS + TypeScript for the backend (strong DI, decorators, first-class DDD layering), PostgreSQL per service (one DB per bounded context), Kafka for the event bus, pgvector for AI embeddings, Google Gemini for the LLM, React + Vite + Tailwind for the SPA, nginx as the API gateway, and Docker Compose / Kubernetes for orchestration. TypeORM is the ORM, class-validator for DTO validation.</p>
+
+<p><b>Q8. What are you most proud of in this codebase?</b><br>
+The event-delivery story: a transactional outbox in operations, idempotent consumers in the ledger, and a choreographed saga with compensation for the storno (reversal) workflow. It means a reversal is eventually consistent and self-healing even if a service crashes mid-flight, without distributed two-phase commit.</p>
+
+<p><b>Q9. If you had three more months, what would you fix first?</b><br>
+Three things in order: (1) replace the Base64 password placeholder with bcrypt/argon2 and use a vetted JWT library, (2) move money off JavaScript floats onto a decimal type, and (3) persist the audit log and registration codes (currently in-memory) and add saga timeouts so a bill can't get stuck in REVERSING forever.</p>
+
+<p><b>Q10. Who are the user roles and what can each do?</b><br>
+Four roles in a hierarchy enforced by <code>RolesGuard</code>: admin (40) &gt; accountant (30) &gt; data_clerk (25) &gt; auditor (20). Admin manages users and the business profile, accountant posts and pays documents, data_clerk enters data, auditor has read access. A guard requiring "accountant" admits anyone at level 30 or above.</p>
+
+<hr>
+
+<h2>TIER 2 — Architecture, DDD &amp; bounded contexts (very likely)</h2>
+
+<p><b>Q11. Walk me through the request flow for a typical API call.</b><br>
+Client → nginx gateway (port 3000) which routes <code>/api/v1/&lt;area&gt;</code> to the owning service → the service's Nest controller → application service → domain aggregate. Auth is a Bearer JWT issued by IAM; the gateway forwards it and each service trusts/validates it. The frontend talks only to the gateway, never to services directly.</p>
+
+<p><b>Q12. What are your bounded contexts and how did you decide the boundaries?</b><br>
+IAM (identity, tenants, auth), Compliance (Kosovo tax taxonomy + rules), Operations (bills, invoices, inventory, EDI, storno orchestration), Ledger (double-entry journal, reports), and AI (insights, NL queries). Boundaries follow data ownership and language: a "bill" is an Operations concept, a "journal entry" is a Ledger concept, and they communicate only through events, never shared tables.</p>
+
+<p><b>Q13. How do services communicate — synchronously or asynchronously?</b><br>
+Both. Business state changes flow asynchronously via Kafka events (operations → ledger → AI). Cross-tenant lookups and compliance validation are synchronous HTTP calls. I deliberately kept the write-path async (for resilience and decoupling) and the read/lookup-path sync (for simplicity and immediate consistency where it's needed).</p>
+
+<p><b>Q14. Each service has its own database. Why? What do you lose?</b><br>
+Database-per-service enforces the bounded context at the data layer — no service can reach into another's tables, so they can evolve schemas independently. What I lose is cross-service ACID transactions and easy joins; I compensate with events, the outbox pattern, idempotent consumers, and a saga for the one multi-service workflow (storno).</p>
+
+<p><b>Q15. Show me how DDD layering appears in the code.</b><br>
+Each service has <code>domain/</code> (aggregates, value objects, invariants — e.g. <code>FaturaHyrese</code>, <code>BillLine</code>), <code>application/</code> (services orchestrating use-cases, DTOs), and <code>infrastructure/</code> (controllers, TypeORM entities, repositories, Kafka adapters). The domain layer has no framework or DB dependency — <code>FaturaHyrese</code> is plain TypeScript with a private constructor and factory methods.</p>
+
+<p><b>Q16. What is an aggregate, and what is your aggregate root?</b><br>
+An aggregate is a cluster of domain objects treated as one consistency boundary, mutated only through its root. <code>FaturaHyrese</code> (incoming bill) is a root; its <code>BillLine</code> items are value objects inside it. You can't construct an invalid line or an invalid bill — all invariants are checked in the constructors, and state changes go through methods like <code>post()</code>, <code>pay()</code>, <code>reverse()</code>.</p>
+
+<p><b>Q17. Why is <code>FaturaHyrese</code>'s constructor private with static factory methods?</b><br>
+To force every creation path through validation and to distinguish "brand new" from "loaded from DB". <code>createNew()</code> generates a UUID and starts in DRAFT; <code>rehydrate()</code> reconstructs an existing bill with its persisted status. A private constructor prevents anyone bypassing those invariants.</p>
+
+<p><b>Q18. What's the difference between an entity and a value object in your model?</b><br>
+An entity has identity and a lifecycle (the bill, identified by UUID, transitions through states). A value object is defined entirely by its attributes and is immutable (a <code>BillLine</code> — two lines with the same description/quantity/price are interchangeable). My <code>BillLine</code> fields are all <code>readonly</code> and it exposes a computed <code>netAmount</code> getter.</p>
+
+<p><b>Q19. Where do you enforce business invariants — in the database, the DTO, or the domain?</b><br>
+In three layers, deliberately. DTOs (class-validator) reject malformed HTTP input early. The domain aggregate enforces true business invariants (a bill needs ≥1 line, quantity &gt; 0, valid state transitions). Compliance rules (valid tax category, leaf account codes) are checked via the compliance client. The DB has constraints (unique, not-null) as a last backstop.</p>
+
+<p><b>Q20. Isn't validating in three places redundant?</b><br>
+There's overlap but each layer has a distinct job: DTO validation protects the HTTP boundary and gives clean 400s; domain invariants protect the model regardless of how it's invoked (including from a Kafka consumer that never sees a DTO); DB constraints protect against bugs in the layers above. Defence in depth is intentional, not accidental duplication.</p>
+
+<p><b>Q21. How does the gateway know where to route a request?</b><br>
+nginx matches the path prefix: <code>/api/v1/bills</code>, <code>/invoices</code>, <code>/inventory</code>, <code>/operations</code>, <code>/edi</code> → operations:3003; <code>/iam</code>,<code>/auth</code> → iam:3001; <code>/compliance</code> → 3002; <code>/ledger</code> → 3004; <code>/ai</code> → 3005; everything else → the frontend. It uses a dynamic DNS resolver so it re-resolves service IPs as pods restart.</p>
+
+<p><b>Q22. Why nginx as the gateway rather than an API-gateway product (Kong, Traefik) or Nest itself?</b><br>
+nginx is lightweight, battle-tested for reverse proxying, and zero-cost to run. For this scope I only needed path-based routing and a health endpoint. A product like Kong would add auth plugins, rate limiting, and request transformation — which I'd adopt in production, but they were beyond the project's needs.</p>
+
+<p><b>Q23. The gateway does no authentication. Where is auth enforced?</b><br>
+Auth is enforced inside each service via the <code>JwtAuthGuard</code>, since each service must independently trust the token (defence in depth). Ideally the gateway would also verify the JWT at the edge to reject unauthenticated traffic early — IAM exposes a <code>/verify</code> endpoint for exactly that — but currently the gateway just proxies.</p>
+
+<p><b>Q24. What is CQRS and do you use it?</b><br>
+CQRS separates the write model (commands) from the read model (queries). I don't implement full CQRS — services handle both — but there are CQRS-flavoured elements: the ledger maintains an in-memory read projection rehydrated from Postgres, and the AI service builds a separate read model from ledger events. A natural evolution would be event-sourced read projections.</p>
+
+<p><b>Q25. How would you add a new bounded context, say Payroll?</b><br>
+Create a new service with its own DB, define its aggregates, subscribe it to the events it cares about (e.g. it would publish <code>payrollPosted</code> that the ledger consumes into salary/expense accounts), add gateway routing, and register its compliance rules. The event contracts are the integration surface, so existing services need no changes.</p>
+
+<hr>
+
+<h2>TIER 3 — Event-driven core: Kafka, outbox, saga, idempotency (very likely, high-value)</h2>
+
+<p><b>Q26. Describe the end-to-end event flow when a bill is posted.</b><br>
+Operations commits the bill as POSTED and writes a <code>billPosted</code> row to its outbox table in the same logical operation. A dispatcher publishes it to the <code>operations.events</code> Kafka topic. The ledger consumes it, posts a double-entry journal (expense debit / payable credit), persists it, and publishes <code>journalEntryPosted</code> to <code>ledger.events</code>. The AI service consumes that and updates its per-tenant financial read model.</p>
+
+<p><b>Q27. What is the transactional outbox pattern and why did you use it?</b><br>
+Instead of writing to the DB and then publishing to Kafka (two systems that can't share a transaction — the "dual write" problem), I persist the event into an <code>ops_event_outbox</code> table as part of the DB write, then a background dispatcher reads PENDING rows and publishes them, marking them PUBLISHED on success. If the broker is down the event isn't lost; it's retried. This guarantees at-least-once delivery without distributed transactions.</p>
+
+<p><b>Q28. Walk me through your outbox dispatcher implementation.</b><br>
+<code>CrossServiceEventPublisher.flushOutbox()</code> runs on a 1.5-second interval (and immediately after a publish). It selects PENDING or FAILED rows whose <code>nextAttemptAt</code> ≤ now, ordered by creation, in batches of 50. Each is delivered; on success it's marked PUBLISHED, on failure it's marked FAILED with an exponential backoff (<code>2^attempts</code>, capped at 60s) and the error stored. A boolean guard prevents overlapping flushes.</p>
+
+<p><b>Q29. Your outbox isn't actually written in the same DB transaction as the bill — is it truly transactional?</b><br>
+Correct, and that's a fair challenge. The bill is saved, then the outbox row is saved in a separate call, so there's a narrow window where the bill commits but the outbox insert fails. A fully correct implementation wraps both in one <code>EntityManager</code> transaction. As written it's "outbox-style" and dramatically more reliable than a naive dual-write, but to be rigorous I'd wrap them in a single transaction.</p>
+
+<p><b>Q30. What delivery guarantee do you have — at-most-once, at-least-once, or exactly-once?</b><br>
+At-least-once. The outbox retries until success, so an event can be delivered more than once (e.g. published, then the PUBLISHED update fails, so it's retried). I make the consumers idempotent so duplicate delivery is harmless — that's how you get effectively-once processing without true exactly-once semantics.</p>
+
+<p><b>Q31. How exactly do consumers deduplicate?</b><br>
+Every event is enriched with an <code>eventId</code> (UUID) and a deterministic <code>idempotencyKey</code> of the form <code>type:tenantId:entityRef</code>. The ledger keeps a <code>ledger_ingested_events</code> table; before processing it checks whether that idempotencyKey/eventId was already ingested and skips if so, otherwise inserts the marker and proceeds. There's also an in-memory <code>Set</code> fallback when the DB isn't wired.</p>
+
+<p><b>Q32. There's a race in the dedup check — find-then-insert isn't atomic. Two duplicate events arriving concurrently could both pass. How would you fix it?</b><br>
+Right. The robust fix is to rely on a unique constraint on the idempotency marker and treat an insert conflict as "already processed" — insert first, and if it throws a unique-violation, skip. The code does fall back to catching the save error as a duplicate, but the primary path does a separate <code>findOne</code> first, which has the race. Insert-and-catch (or <code>INSERT ... ON CONFLICT DO NOTHING</code>) closes it.</p>
+
+<p><b>Q33. Why Kafka specifically, and not RabbitMQ or Google Pub/Sub?</b><br>
+Kafka gives a durable, replayable log — consumers track offsets and can re-read history, which suits an accounting audit trail. Different consumer groups (ledger, AI, the saga consumer) each get the full stream independently. The code is abstracted enough that the docker-compose even ships a Pub/Sub emulator, and the publisher has an HTTP fallback, so the transport is swappable.</p>
+
+<p><b>Q34. What is the saga pattern and where do you use it?</b><br>
+A saga coordinates a multi-service operation as a sequence of local transactions with compensating actions, instead of a distributed transaction. I use a choreographed saga for storno (reversal): Operations moves the bill to REVERSING and requests a reversal; the Ledger posts the reversing entry and replies; Operations finalizes to REVERTED on success or compensates back to POSTED on failure.</p>
+
+<p><b>Q35. Walk through the storno saga step by step, including the failure path.</b><br>
+(1) <code>reverseBill()</code> transitions POSTED → REVERSING, persists, publishes <code>billRevertRequested</code>. (2) The ledger finds the original unreversed journal entry, posts a STORNO entry that swaps every line's debit and credit, marks the original <code>reversedBy</code>, and publishes <code>stornoPosted</code>. (3) Operations' saga consumer calls <code>handleStornoPosted()</code> → <code>confirmReversal()</code> → REVERTED. On the failure path the ledger can't find the original, publishes <code>stornoFailed</code>, and Operations calls <code>cancelReversal()</code> → back to POSTED.</p>
+
+<p><b>Q36. Is this choreographed or orchestrated, and why?</b><br>
+Choreographed — there's no central coordinator; each service reacts to events and emits its own. I chose it because the storno flow is short (two services, two steps) and choreography keeps them decoupled. For a longer workflow with many branches I'd switch to an orchestrator (a saga state machine) because choreography becomes hard to follow as steps multiply.</p>
+
+<p><b>Q37. What happens if the Ledger never replies — the bill is stuck in REVERSING forever. How do you handle that?</b><br>
+That's a real gap: there's no saga timeout. Today the bill stays REVERSING until a reply arrives. The fix is a timeout/watchdog: persist the saga start time and have a scheduled job that, after N minutes with no reply, either retries the request or moves the bill to a "needs attention" state for manual resolution. A dead-letter queue for poison messages would complement it.</p>
+
+<p><b>Q38. The saga reply handlers return silently if the bill isn't found or is in the wrong state. Is that safe?</b><br>
+It's idempotent-safe — a duplicate <code>stornoPosted</code> for an already-REVERTED bill is correctly ignored — but it's observability-poor: a reply for a non-existent entity is swallowed with no alert. I'd keep the idempotent guard but log it at warn/error and emit a metric, so genuinely anomalous replies are visible rather than silent.</p>
+
+<p><b>Q39. Why does the STORNO entry swap debit and credit instead of deleting the original?</b><br>
+Because accounting records are immutable — you never erase a posted entry, you post an equal and opposite reversing entry so the audit trail shows both the original and the correction. Swapping debit↔credit on every line produces a journal that nets the original to zero while preserving history, which is exactly what tax auditors require.</p>
+
+<p><b>Q40. Both Kafka and HTTP appear as transports. Why the fallback?</b><br>
+Resilience and dev ergonomics. If <code>KAFKA_BROKERS</code> is unset or the broker is unreachable, the publisher posts events directly to the target service's HTTP endpoint (e.g. <code>/api/v1/ledger/events</code>), and the saga reply has an HTTP fallback to <code>/operations/saga/storno-reply</code>. It means the system runs locally without Kafka and degrades gracefully if Kafka is down.</p>
+
+<p><b>Q41. With a single Kafka partition, can you guarantee event ordering?</b><br>
+Within one partition, yes — Kafka preserves order per partition, and I key messages by tenantId so a tenant's events land on the same partition and stay ordered. With one partition globally everything is ordered but throughput is capped at one consumer. Scaling to multiple partitions keeps per-tenant ordering (because of the key) while allowing parallelism.</p>
+
+<p><b>Q42. If you scale the ledger to multiple consumer instances, what breaks?</b><br>
+The in-memory <code>mem</code> projection: each instance would hold only the entries from its assigned partitions, so a trial-balance query hitting one instance would be incomplete. The fix is to compute reports from Postgres (the source of truth) rather than the in-memory array, or to make the read API query the DB directly. The dedup table is already shared via Postgres so idempotency survives scaling.</p>
+
+<p><b>Q43. What is a consumer group and how do you use them?</b><br>
+A consumer group is a set of consumers that share a topic's partitions so each message is processed once per group. The ledger's operations-consumer, the AI's ledger-consumer, and Operations' storno-saga consumer each use distinct group IDs, so they independently receive the streams they care about — AI and the saga consumer both read <code>ledger.events</code> but in separate groups, so both see every message.</p>
+
+<p><b>Q44. Your Kafka consumers catch parse errors and just log them — won't that drop events?</b><br>
+Yes — a malformed message is logged and skipped, with no retry or dead-letter. For transient handler failures that's a real risk of silent loss. Production-grade handling would commit offsets only after successful processing, retry with backoff, and route poison messages to a dead-letter topic for inspection rather than dropping them.</p>
+
+<p><b>Q45. How do you prevent an infinite event loop (ledger → AI → ledger …)?</b><br>
+The topology is acyclic by design: Operations publishes to <code>operations.events</code>, the ledger consumes that and publishes to <code>ledger.events</code>, and AI only consumes <code>ledger.events</code> and never publishes back. No consumer emits to a topic that eventually feeds itself, so there's no cycle.</p>
+
+<p><b>Q46. The <code>idempotencyKey</code> is <code>type:tenantId:entityRef</code>. What if two legitimately different events produce the same key?</b><br>
+That's the risk to watch. For example two payments against the same reference could collide if <code>entityRef</code> isn't unique per event instance. For payments the reference is suffixed (<code>-PAYMENT</code>), but the general lesson is the key must include something that distinguishes distinct business events. Where it can't, I rely on the unique <code>eventId</code> as the real dedup anchor.</p>
+
+<p><b>Q47. How would you replay events to rebuild the AI read model from scratch?</b><br>
+Because Kafka retains the log, I'd reset the AI consumer group's offset to the beginning of <code>ledger.events</code> and let it re-consume. The ingestion is additive per tenant, so I'd first clear the AI state/vector store, then replay. This is a key reason I chose Kafka over a fire-and-forget bus.</p>
+
+<hr>
+
+<h2>TIER 4 — Accounting domain: double-entry, ledger, VAT, reports (very likely)</h2>
+
+<p><b>Q48. Explain double-entry bookkeeping and how your ledger implements it.</b><br>
+Every transaction affects at least two accounts so that total debits equal total credits. My ledger posts each event as a two-line journal entry — e.g. a posted bill debits an operating-expense account and credits accounts payable for the same amount. The <code>getSummary()</code> method reports whether total debits and credits are balanced within a cent.</p>
+
+<p><b>Q49. Critical: do you actually enforce that debits equal credits when posting?</b><br>
+No — and this is the sharpest accounting critique. The ledger constructs balanced pairs in code, so in practice they balance, but there's no guard rejecting an entry where <code>sum(debits) ≠ sum(credits)</code>. A corrupt upstream event could post an unbalanced entry. The fix is a single invariant check in the posting path that throws if the lines don't balance — cheap and essential for a financial system.</p>
+
+<p><b>Q50. Even bigger: I don't see VAT posted anywhere. Where does VAT go in your journal entries?</b><br>
+You've found the most important accounting gap. The events carry <code>totalNetAmount</code> and the ledger posts net expense/payable (or receivable/revenue) — it never posts the VAT to a separate VAT-receivable/payable account, even though the bill lines carry a <code>taxCategoryId</code> and the chart of accounts has a VAT account (250). So the books are net-only. To be tax-correct, posting a bill should be a three-line entry: expense (net) debit, VAT input debit, payable (gross) credit. I'd present this as the top correctness fix.</p>
+
+<p><b>Q51. So your trial balance and reports exclude VAT entirely?</b><br>
+Yes — because VAT is never posted, the trial balance, P&amp;L and balance sheet are all on a net basis. For an SME's internal P&amp;L that's still informative, but it's not a fil-ready VAT position. Fixing the posting (Q50) automatically flows VAT into the trial balance and enables a proper VAT return.</p>
+
+<p><b>Q52. How are monetary amounts represented? Any precision concerns?</b><br>
+They're JavaScript <code>number</code> (IEEE-754 doubles). I round to two decimals with <code>Math.round(x*100)/100</code> in reports. The concern is real: floating-point can't represent values like 0.1 exactly, and errors can accumulate over many lines. For a financial system the correct choice is a decimal type (decimal.js / big.js) or integer minor units (cents), with rounding only at well-defined points.</p>
+
+<p><b>Q53. At what scale does the float issue actually bite?</b><br>
+For a handful of lines it's invisible — the two-decimal rounding masks it. It becomes material when you sum thousands of fractional values or chain multiplications (quantity × unit price × tax) without rounding between steps. The honest answer is: it hasn't caused a visible bug at demo scale, but it's a latent correctness risk that a real deployment must remove.</p>
+
+<p><b>Q54. Walk me through the journal entries for the full bill lifecycle.</b><br>
+On <code>billPosted</code>: debit operating expense (665-09), credit accounts payable (220). On <code>billPaid</code>: debit accounts payable (220), credit cash (100) — settling the liability. On storno: a STORNO entry reversing the original lines. Each is balanced and tagged ORIGINAL or STORNO with the bill reference.</p>
+
+<p><b>Q55. And for a sales invoice?</b><br>
+On <code>invoiceCreated</code>: debit accounts receivable (140), credit revenue (700). On <code>invoicePaid</code>: debit cash (100), credit accounts receivable (140). <code>invoiceSent</code> is a commercial state change with no accounting posting — recognition happens at creation.</p>
+
+<p><b>Q56. How do inventory movements hit the ledger?</b><br>
+A RECEIPT debits inventory (125) and credits payable (220). An ISSUE debits cost of goods sold (500) and credits inventory (125). So the ledger tracks stock value and COGS automatically from the inventory events.</p>
+
+<p><b>Q57. What is the SKA chart of accounts and how is it encoded?</b><br>
+SKA is Kosovo's standardized chart of accounts. In the ledger it appears as a constant map of codes (100 cash, 125 inventory, 140 receivable, 220 payable, 500 COGS, 700 revenue, 665-09 other operating expense), and the compliance service holds the fuller hierarchical taxonomy (~45 accounts with parent/child and types).</p>
+
+<p><b>Q58. What is the <code>LEGACY_TO_SKA_ACCOUNT</code> map for?</b><br>
+It normalizes older 4-digit codes (1000, 2000, 4000…) to current SKA codes (100, 220, 700…). Historical entries or alternate inputs get mapped to the canonical code before aggregation, so the trial balance and reports group consistently regardless of which code style produced the entry.</p>
+
+<p><b>Q59. How is the trial balance computed?</b><br>
+<code>getTrialBalance()</code> iterates the tenant's in-memory entries, sums debits and credits per (normalized) account, and returns each account's totals plus its net balance, rounded to cents. It's an aggregation over the journal — the classic trial balance.</p>
+
+<p><b>Q60. How do you generate the P&amp;L and what assumptions does it bake in?</b><br>
+<code>generateProfitLossCsv()</code> filters entries to a quarter and classifies by account-code prefix: 7xx as revenue, 500 as COGS, 6xx as operating expenses; gross profit = revenue − COGS, net = gross − opex. The CSV is in Albanian with TAK headers. The baked-in assumption is that the prefix convention holds — if SKA reclassifies a code, the report logic must change with it.</p>
+
+<p><b>Q61. Your balance sheet uses prefix sums and <code>Math.max(0, …)</code>. Walk me through it and its risks.</b><br>
+<code>generateBalanceSheetCsv()</code> nets each account (debit − credit) as of quarter-end, then sums prefix '1' as assets, '2' as liabilities (sign-flipped), and sets equity = assets − liabilities. The <code>Math.max(0, …)</code> clamps negatives to zero, which hides legitimately negative balances (e.g. an overdrawn cash account) and forces the sheet to "look" balanced rather than proving it. A correct balance sheet should derive equity from actual equity/retained-earnings accounts and never clamp.</p>
+
+<p><b>Q62. Does your balance sheet actually prove assets = liabilities + equity, or assume it?</b><br>
+It assumes it — equity is defined as assets − liabilities, so the identity holds by construction rather than by independent measurement. A real balance sheet computes equity from equity-class accounts (300/310/320) and uses the accounting equation as a check; if it doesn't balance, that signals an error. Mine can't detect such an error.</p>
+
+<p><b>Q63. There's a <code>ledger-closed-period</code> entity in the codebase — is period locking implemented?</b><br>
+The entity exists, so the data model anticipates closed periods, but the posting path doesn't yet consult it — entries can be back-dated into any period. So it's modelled but not enforced. Enforcement would mean checking, before posting, that the entry's date isn't in a closed period and rejecting it if so.</p>
+
+<p><b>Q64. Why is the ledger held in memory and rehydrated from Postgres?</b><br>
+For fast read aggregations (trial balance, reports) without round-tripping the DB on every query. On startup <code>onModuleInit()</code> loads all entries into the <code>mem</code> array; writes go to both memory and Postgres. The trade-off is memory growth and the multi-instance problem (Q42) — at scale the reads should move to SQL aggregation.</p>
+
+<p><b>Q65. Is the ledger append-only? Can an entry ever be mutated?</b><br>
+Effectively append-only for accounting purposes: corrections are new STORNO entries, never edits. The one mutation is setting <code>reversedBy</code> on the original to link it to its reversal. There's no API to delete or alter the amounts/lines of a posted entry, which preserves the audit trail.</p>
+
+<p><b>Q66. How would you support multi-currency? Right now everything is EUR.</b><br>
+Currency is stored on the bill but reports hardcode EUR. I'd add an exchange-rate service, store both transaction currency and a base-currency amount on each entry (with the rate and date used), and post in base currency while retaining the original. Reports would then aggregate in base currency. It's a sizeable change because every amount becomes a (value, currency, rate) triple.</p>
+
+<p><b>Q67. What does the inventory weighted-average cost calculation do?</b><br>
+On a RECEIPT it recomputes the average unit cost: <code>(oldQty×oldAvg + qty×newCost) / (oldQty+qty)</code>, and increases quantity on hand. On an ISSUE it values the issue at the current average and decrements quantity, refusing to issue more than is on hand. Valuation is Σ(quantity × average cost) per SKU.</p>
+
+<p><b>Q68. Why weighted-average rather than FIFO or LIFO?</b><br>
+Weighted-average is simplest to implement correctly and is acceptable under most accounting standards for SMEs; it avoids tracking individual cost layers. FIFO would require a queue of cost lots per SKU and is more faithful in inflationary conditions; LIFO is disallowed under IFRS. For the target users, weighted-average is a defensible, standard choice.</p>
+
+<p><b>Q69. If you reverse a bill that contained inventory items, does the inventory reverse too?</b><br>
+No — and that's a consistency gap. Bill reversal and inventory reversal are decoupled; the storno saga reverses the journal but doesn't emit compensating inventory movements. A correct design would have the bill reversal also trigger reversing inventory movements (or model them as part of the same saga), otherwise stock and books drift apart.</p>
+
+<p><b>Q70. Could inventory go negative under concurrency?</b><br>
+Yes. The check "on-hand ≥ requested" and the decrement aren't atomic, and state lives in an in-memory map, so two concurrent ISSUEs could both pass the check and drive quantity negative. The fix is a per-SKU lock or an atomic conditional DB update (<code>UPDATE … SET qty = qty - :n WHERE qty &gt;= :n</code>) that fails if it would go negative.</p>
+
+<hr>
+
+<h2>TIER 5 — Security &amp; authentication (very likely — expect probing)</h2>
+
+<p><b>Q71. How are passwords stored?</b><br>
+Honestly: as Base64 of the plaintext, with a code comment flagging it as a demo placeholder. Base64 is encoding, not hashing — it's fully reversible, so it provides no protection if the database leaks. This is the single most important thing to fix and I'd say so up front.</p>
+
+<p><b>Q72. Why is Base64 not acceptable, and what should you use?</b><br>
+Hashing must be one-way and slow, with a per-user salt, so an attacker who steals the DB can't recover passwords or run fast offline guessing. Base64 is instantly reversible. The correct choice is a memory-hard adaptive hash — argon2id (preferred) or bcrypt — with a salt and a tuned work factor. It's a few-line change: hash on registration, compare with the library's verify on login.</p>
+
+<p><b>Q73. How are your JWTs created and verified?</b><br>
+Hand-rolled HS256: the service base64url-encodes a header and payload, signs with HMAC-SHA256 over a secret, and on verification re-splits the token, recomputes the signature, and checks expiry, tenantId and role. It's functionally a JWT but implemented manually rather than via a vetted library.</p>
+
+<p><b>Q74. What's wrong with implementing JWT yourself?</b><br>
+Crypto you write yourself is easy to get subtly wrong — constant-time signature comparison, algorithm confusion (the "alg: none" attack), correct base64url handling, claim validation. A maintained library (<code>jsonwebtoken</code>, <code>jose</code>, or Nest's <code>@nestjs/jwt</code>) has handled these and is audited. I'd swap to one; the manual version was to understand the mechanics, not for production.</p>
+
+<p><b>Q75. Your JWT secret falls back to a hardcoded default. Why is that dangerous?</b><br>
+If <code>JWT_SECRET</code> isn't set it defaults to a string committed in the source. Anyone who reads the repo can forge a token for any tenant and role — full authentication bypass. Production must fail to boot if the secret is absent, and the secret must come from a secret manager, never source. The k8s secret also ships with a placeholder value that must be replaced.</p>
+
+<p><b>Q76. What's in your JWT payload and why include tenantId?</b><br>
+sub (user id), email, tenantId, role, mustChangePassword, iat, exp. tenantId is included so every downstream service can scope data to the caller's tenant without an extra lookup — it's the backbone of multi-tenant isolation. The trade-off is that tenant/role are baked in until the 8-hour token expires.</p>
+
+<p><b>Q77. There's no refresh token and an 8-hour expiry. What are the implications?</b><br>
+Users are silently logged out at 8 hours, and there's no way to revoke a token early — if a token leaks it's valid until expiry. A refresh-token scheme would let me issue short-lived access tokens (minutes) plus a revocable refresh token, shrinking the exposure window and enabling logout/revocation. As-is, the only mitigation is the relatively long-but-bounded lifetime.</p>
+
+<p><b>Q78. How do you revoke a compromised token today?</b><br>
+You can't, cleanly — JWTs are stateless and there's no deny-list. Options I'd add: a short access-token TTL with refresh tokens, a server-side token blacklist keyed by jti, or rotating the signing secret (which nukes all sessions). For now the honest answer is revocation isn't supported.</p>
+
+<p><b>Q79. How do services authenticate to each other (e.g. Operations → IAM internal lookup)?</b><br>
+Via a shared secret header <code>x-operations-secret</code> checked against <code>IAM_OPS_SHARED_SECRET</code>. It gates the internal NUI-lookup endpoints. The weakness is a hardcoded dev fallback value and a single static secret; a stronger design uses mutual TLS or signed service tokens (e.g. SPIFFE/mTLS in the mesh) with rotation.</p>
+
+<p><b>Q80. The <code>x-tenant-id</code> header drives data scoping but isn't checked against the JWT. Can a user read another tenant's data?</b><br>
+This is the biggest authorization risk. Several services trust <code>x-tenant-id</code> from the header and even default it to <code>'public'</code> if missing, rather than deriving the tenant from the verified JWT. A caller who sets another tenant's id could read their data. The correct design is to ignore the header and take tenantId from the authenticated token claim, or to verify the header matches the claim.</p>
+
+<p><b>Q81. So is tenant isolation actually enforced?</b><br>
+Data is filtered by tenantId everywhere — repositories, queries, the vector store — so isolation is implemented at the application layer. But because some entry points trust a client-supplied tenant id, the enforcement is only as strong as that trust. Tightening it to the JWT claim, plus Postgres row-level security as defence in depth, would make it robust.</p>
+
+<p><b>Q82. Is there rate limiting or brute-force protection on login?</b><br>
+No — there's no throttling on login or registration, so credential stuffing and brute force aren't mitigated. I'd add a rate limiter (Nest's <code>ThrottlerGuard</code> or at the gateway), account lockout/backoff after repeated failures, and ideally CAPTCHA on registration. The registration code flow does cap verification attempts at 5, which is a partial control.</p>
+
+<p><b>Q83. Where is the audit log stored?</b><br>
+In an in-memory ring buffer capped at 500 entries in IAM (and ~100 in Operations' activity log). That means it's lost on restart and can't serve a real audit. For a financial/regulated system the audit trail must be persisted to the database (append-only, ideally tamper-evident). It's currently a functional demo, not a compliance-grade log.</p>
+
+<p><b>Q84. Registration/verification codes are also in memory — what's the consequence?</b><br>
+A 4-digit code with a 10-minute TTL is held in a Map; if the service restarts, pending registrations are lost, and across multiple replicas the code isn't shared so verification can hit the wrong instance. It should live in a shared store (Postgres or Redis) with a TTL. Also, 4 digits is low entropy — I'd lengthen it and rate-limit attempts (attempts are capped at 5, which helps).</p>
+
+<p><b>Q85. Is traffic encrypted? I don't see TLS in the ingress.</b><br>
+Locally it's plain HTTP, and the k8s ingress has no TLS section, so JWTs would travel in clear text — vulnerable to interception. Production must terminate TLS at the ingress (cert-manager + Let's Encrypt) and ideally use mTLS between services. This is a deployment hardening item rather than an app-code change.</p>
+
+<p><b>Q86. How does the frontend store the JWT, and what's the risk?</b><br>
+In <code>localStorage</code> under <code>guri_token</code>. The risk is XSS: any injected script can read localStorage and exfiltrate the token. The more secure pattern is an httpOnly, Secure, SameSite cookie set by the backend so JavaScript can't read it, combined with CSRF protection. localStorage was chosen for simplicity with a token-in-header API.</p>
+
+<p><b>Q87. Are you vulnerable to SQL injection?</b><br>
+Largely no for the ORM paths — TypeORM uses parameterized queries, and the pgvector raw SQL in the AI service uses bound parameters. The thing to watch is any place that builds SQL by string concatenation; I avoided that. The bigger input-validation story is class-validator on DTOs rejecting malformed payloads.</p>
+
+<p><b>Q88. Is CORS configured safely?</b><br>
+The monolith enables CORS from <code>ALLOWED_ORIGINS</code> or <code>*</code> as a fallback with credentials. Wildcard origin plus credentials is not allowed by browsers and is unsafe in general; production must pin explicit origins. It's a permissive dev default that needs locking down.</p>
+
+<p><b>Q89. What does <code>mustChangePassword</code> do and why?</b><br>
+When an admin creates a user, the account is flagged to force a password change on first login, so the admin-set temporary password can't persist. The flag rides in the JWT and the login response so the UI can route the user into the change-password flow. It's a small but real security control.</p>
+
+<p><b>Q90. How is the NUI (business ID) validated, and is it enough?</b><br>
+With the regex <code>^8\d{8}</code> — nine digits starting with 8 — at both the DTO and entity level, plus a uniqueness check in the service. It validates format and uniqueness but not that the NUI is a real registered business; a production system would verify against Kosovo's business registry.</p>
+
+<hr>
+
+<h2>TIER 6 — Multi-tenancy &amp; data isolation (likely)</h2>
+
+<p><b>Q91. What multi-tenancy model did you choose — silo, bridge, or pool?</b><br>
+Pool (shared database, shared schema) with a tenantId discriminator column on every row. It's the cheapest and simplest to operate for many small tenants. The trade-off is that isolation depends on always filtering by tenantId in code; a missed filter leaks data, which is why row-level security would be a valuable backstop.</p>
+
+<p><b>Q92. How is a tenant created?</b><br>
+Registration creates a Tenant (name, slug, NUI) and its first admin User together. The tenant id then appears in every JWT issued to that tenant's users and scopes all their data across services.</p>
+
+<p><b>Q93. How would you move a noisy or large tenant to its own database?</b><br>
+Because every row carries tenantId and services own their data, I could migrate that tenant's rows to a dedicated DB and route its requests there (a "bridge"/"silo" per-tenant routing). The app already keys everything by tenant, so the main work is connection routing and the data move, not a domain rewrite.</p>
+
+<p><b>Q94. Could you add Postgres row-level security?</b><br>
+Yes, and I'd recommend it. I'd set a session variable (e.g. <code>app.tenant_id</code>) from the verified JWT on each request and define RLS policies that restrict every table to matching rows. Then even a forgotten <code>WHERE tenantId = …</code> can't leak data — the database enforces it. That's the proper defence-in-depth answer to Q80/Q81.</p>
+
+<p><b>Q95. How does cross-tenant invoicing (EDI) respect isolation?</b><br>
+When company A sends an invoice to company B, A only supplies B's NUI; IAM resolves it to B's tenant id via an authenticated internal lookup, and an EDI inbox item is created under B's tenant. Neither side reads the other's tables — the document is copied across the boundary as a snapshot, preserving isolation.</p>
+
+<p><b>Q96. What stops tenant A from enumerating tenant B's bills by guessing UUIDs?</b><br>
+Currently only the application's tenantId filter, and — as noted — some endpoints trust the header. UUIDv4 ids are unguessable in practice, but security shouldn't rest on that. Deriving tenant from the JWT plus RLS is the real protection.</p>
+
+<p><b>Q97. The default tenant is <code>'public'</code> when no header is present. Why, and is it a risk?</b><br>
+It was a convenience so endpoints work in local testing without auth wiring. It's a risk because unauthenticated or header-less calls land on a shared <code>'public'</code> tenant. In production I'd remove the default and reject requests without an authenticated tenant.</p>
+
+<p><b>Q98. Do all five services agree on what a tenant is?</b><br>
+Yes — tenantId (a UUID) is the shared identifier across all services and events. IAM is the source of truth that mints it; everyone else treats it as an opaque scoping key carried in the JWT and on every event.</p>
+
+<hr>
+
+<h2>TIER 7 — AI service, RAG &amp; Gemini (likely — it's a headline feature)</h2>
+
+<p><b>Q99. What does the AI service actually do?</b><br>
+It maintains a per-tenant financial read model from ledger events (total expenses, entry count, history), generates rule-based insights (e.g. expense-spike warnings), and answers natural-language questions about a tenant's finances using Retrieval-Augmented Generation over Gemini, grounded in the tenant's data plus the Kosovo compliance corpus.</p>
+
+<p><b>Q100. Explain your RAG pipeline end to end.</b><br>
+The question is embedded with Gemini's <code>text-embedding-004</code> (768-dim). A cosine-similarity search over pgvector returns the top-k (8) chunks — shared corpus (SKA accounts, rules, tax categories) plus tenant-scoped journal chunks. Those chunks plus a financial summary are assembled into a grounded prompt instructing the model to answer only from context, which is sent to Gemini's <code>generateContent</code>. The answer is returned with sources and a confidence score.</p>
+
+<p><b>Q101. What is RAG and why use it instead of just prompting the LLM?</b><br>
+RAG retrieves relevant facts from your own data and injects them into the prompt, so the model answers from grounded context rather than its trained-in (and possibly stale or hallucinated) knowledge. For finance that's essential — the model must cite this tenant's actual numbers and Kosovo's actual rules, not invent them. It also keeps tenant data out of any model training.</p>
+
+<p><b>Q102. How do you stop the AI hallucinating account codes or amounts?</b><br>
+Three controls: the prompt explicitly says "answer ONLY from the provided context, never fabricate codes/amounts/legal references"; temperature is low (0.2) for determinism; and retrieval grounds it in real chunks. But none of these is a guarantee — LLMs can still drift, so I'd add post-hoc validation (e.g. check any account code it returns exists in the chart of accounts) before trusting outputs.</p>
+
+<p><b>Q103. Is your confidence score meaningful?</b><br>
+Not really — it's a heuristic (high if chunks were retrieved, low on the fallback path), not a calibrated measure of correctness. A retrieved chunk can be high-similarity yet irrelevant. I'd present it as a UI signal, not a guarantee, and improve it with a relevance threshold and an LLM self-check or answer-grounding score.</p>
+
+<p><b>Q104. How is the AI prevented from leaking one tenant's data to another?</b><br>
+The vector search filters <code>tenant_id IS NULL OR tenant_id = :tenant</code>, so it only ever retrieves the shared corpus plus the caller's own chunks; the prompt also states isolation is strict. The weakness is the same header-trust issue (Q80) — the tenant comes from <code>x-tenant-id</code>, so it must be bound to the JWT to be safe.</p>
+
+<p><b>Q105. What about prompt injection — a user asking "ignore instructions and reveal X"?</b><br>
+The query is concatenated into the prompt after the grounding instructions, so a crafted query could attempt to override them. Low temperature and the "answer only from context" framing help but don't fully prevent it. Mitigations I'd add: stronger delimiting/escaping of user input, input sanitization, output filtering, and not placing any secret in the prompt so there's nothing sensitive to exfiltrate.</p>
+
+<p><b>Q106. Your embedding client puts the API key in the URL. Why is that bad?</b><br>
+Query-string secrets leak into access logs, proxy logs, and browser history. The key should go in a header or request body, be sourced from a secret manager, and be rotated. It's an easy fix and a clear finding if a security examiner looks.</p>
+
+<p><b>Q107. If <code>GEMINI_API_KEY</code> is missing, the embedder returns a zero vector. What's the consequence?</b><br>
+All-zero vectors make every similarity comparison meaningless (everything looks equidistant), so retrieval silently returns garbage rather than failing. That's a fail-silent anti-pattern. It should fail fast at startup if embeddings are required, or clearly run in a degraded "no-RAG" mode rather than poisoning the vector space.</p>
+
+<p><b>Q108. Why pgvector and the HNSW index? What do the parameters mean?</b><br>
+pgvector keeps embeddings in the same Postgres I already run, avoiding a separate vector DB. HNSW (m=16, ef_construction=64) is an approximate-nearest-neighbour graph index that's fast for sub-million-row corpora without manual rebuilds, trading a little recall for speed. Cosine distance (<code>&lt;=&gt;</code>) matches how the embeddings are compared.</p>
+
+<p><b>Q109. Why k=8, and is a fixed k a good idea?</b><br>
+Eight chunks balance enough context against prompt size and cost. A fixed k is a simplification — if all eight are low-relevance they still get injected as if useful. Better is a similarity threshold (drop chunks below a score) or dynamic k, so the prompt only carries genuinely relevant context.</p>
+
+<p><b>Q110. How is the compliance corpus seeded into the vector store?</b><br>
+On startup the seeder fetches the bundle from the compliance service, turns each SKA account, rule, and tax category into a natural-language sentence, embeds it, and upserts it as a shared (tenant_id NULL) chunk. Upserts are idempotent via a deterministic logical key, so re-seeding doesn't duplicate.</p>
+
+<p><b>Q111. The seeder skips if the existing count ≥ bundle count. What bug does that hide?</b><br>
+If the taxonomy changes without growing — e.g. an account is renamed or one is removed and another added — the counts can match while content is stale, so the corpus never updates. A content hash or version check would be correct rather than a count comparison.</p>
+
+<p><b>Q112. Why is indexing fire-and-forget? What if it fails?</b><br>
+To keep event ingestion fast and non-blocking — the financial state updates immediately and embedding happens in the background. The downside is that if the embedding call fails, that entry is never searchable and nothing retries it. A durable job queue with retries (or marking un-indexed rows and a sweeper) would fix it.</p>
+
+<p><b>Q113. Why temperature 0.2 rather than 0 or something higher?</b><br>
+Low temperature makes answers more deterministic and less inventive, which is what you want for financial Q&amp;A. I didn't use exactly 0 to retain a little natural phrasing, but 0 would be a defensible choice for maximum determinism. High temperature would increase hallucination risk, so it's avoided.</p>
+
+<p><b>Q114. What happens to AI answers if Gemini is unreachable?</b><br>
+The service falls back to returning the financial snapshot/summary without LLM phrasing and a reduced confidence, so it degrades rather than erroring. That keeps the feature usable offline but obviously without natural-language synthesis.</p>
+
+<p><b>Q115. Does the AI service read other services' databases directly?</b><br>
+No — it owns <code>guri_ai</code> and builds its model purely from <code>ledger.events</code> plus the compliance bundle over HTTP. The docker-compose passes other DB envs to it, but the runtime design is event-driven, preserving the bounded-context rule that a service doesn't reach into another's data. One gap: it can't back-fill history on first start except by replaying the Kafka log.</p>
+
+<p><b>Q116. Are you sending tenant financial data to a third party (Google)? Privacy implications?</b><br>
+Yes — RAG chunks and the question go to Gemini, which is an external processor. For GDPR that needs a data-processing agreement, data-minimization (send only what's needed, avoid personal data — which the compliance rules already discourage in descriptions), and ideally a region-appropriate or self-hosted model option. It's an important compliance consideration I'd flag.</p>
+
+<hr>
+
+<h2>TIER 8 — Compliance &amp; Kosovo tax domain (likely)</h2>
+
+<p><b>Q117. What does the compliance service own?</b><br>
+The Kosovo tax taxonomy: VAT categories (rates and legal basis), the SKA chart of accounts, and a set of compliance rules (bill/invoice/journal/GDPR/accounting contexts). It distributes them as a versioned bundle and offers a validation endpoint that checks bills/invoices/inventory payloads against the rules.</p>
+
+<p><b>Q118. Why is the taxonomy hardcoded in code rather than in a database or admin UI?</b><br>
+For this scope the rules are stable and small, so an in-memory, version-controlled taxonomy is simple, fast, and auditable via git. The cost is that changing a rate requires a code deploy. Production would externalize it to a database or rules store with an admin UI and effective-dated rates so non-developers can update tax law.</p>
+
+<p><b>Q119. Kosovo VAT changes to a new rate next year — what do you do today, and what should you do?</b><br>
+Today: edit the taxonomy constant and redeploy compliance, then services refresh the bundle. The problem is there's no rate history — historical documents would need the old rate. The right model is effective-dated rates (each rate valid from/to a date) so a 2025 bill uses the 2025 rate and a 2026 bill the new one.</p>
+
+<p><b>Q120. How do other services get the rules, and how do they learn about changes?</b><br>
+They pull the bundle over HTTP — the operations service caches it on startup and polls periodically (and falls back to a hardcoded set if compliance is down). There's no push/invalidation, so updates propagate on the next poll. An event-based "rules changed" signal would make propagation immediate.</p>
+
+<p><b>Q121. What's in the validation engine?</b><br>
+Context-specific checks: currency must be EUR, dates sane (no far-future issue date, due ≥ issue), at least one line, valid tax category per line, quantity &gt; 0, unit price ≥ 0, account codes valid/leaf/correct type, and GDPR checks that descriptions/IDs don't contain personal data (email/phone/personal-number/card-like patterns).</p>
+
+<p><b>Q122. The personal-data detection is regex-based. What are its false positives/negatives?</b><br>
+It flags emails, long digit runs (card-like), 10-digit personal numbers, and phone-like strings — but a long invoice or reference number can false-positive, and it misses names or addresses entirely (false negatives). It's a lightweight GDPR guardrail, not real PII detection; a production system would use a proper PII classifier and explicit fields rather than scanning free text.</p>
+
+<p><b>Q123. What is "leaf account" validation and why does it matter?</b><br>
+Postings must go to leaf accounts (e.g. 665-09), not parent/summary accounts (665), so totals roll up correctly. The chart of accounts is hierarchical with parent codes, and rule CR-009 enforces leaf-only posting. It mirrors how real accounting software prevents posting to header accounts.</p>
+
+<p><b>Q124. What is reverse-charge VAT and do you model it?</b><br>
+Reverse charge shifts VAT accounting from the supplier to the buyer (common on imports/EU services) — the buyer records both the output and input VAT. The taxonomy includes reverse-charge categories (e.g. category 28 and an RC-credit category), so the classification exists. But since VAT isn't posted to the ledger at all (Q50), the reverse-charge accounting entries aren't actually produced yet.</p>
+
+<p><b>Q125. The compliance endpoints are unauthenticated. Is that a problem?</b><br>
+They're read-only reference data (tax rates, account codes) meant for internal consumption behind the gateway, so the exposure is low. Still, in production I'd at least restrict them to the internal network/service identity and rate-limit the public-facing ones to prevent abuse of the validate endpoint.</p>
+
+<p><b>Q126. How is localization handled in compliance?</b><br>
+Endpoints accept an <code>x-lang</code> header; rules are translated EN/SQ, and tax/account names are provided with English translations layered over Albanian source. It's pragmatic but uneven — rules are fully bilingual while some names aren't — which I'd unify with a proper translation table.</p>
+
+<p><b>Q127. Operations falls back to hardcoded rules if compliance is unreachable. Fail-open or fail-closed?</b><br>
+It fails open — it validates against a cached/hardcoded rule set and lets the operation proceed. For availability that's pragmatic, but for a compliance control fail-open is risky: during a compliance outage invalid documents could slip through. A stricter mode would fail closed for the rules that are legally material and only fall back for non-critical ones.</p>
+
+<hr>
+
+<h2>TIER 9 — Persistence, repositories &amp; data (likely)</h2>
+
+<p><b>Q128. Why TypeORM, and what are its downsides here?</b><br>
+TypeORM integrates cleanly with Nest's DI and decorators and let me map aggregates to tables quickly. Downsides: it doesn't support pgvector columns (hence raw SQL in the AI service), its <code>synchronize</code>/migration story needs care in production, and active-record/data-mapper mixing can get confusing. For vectors I dropped to a raw <code>pg.Pool</code>.</p>
+
+<p><b>Q129. Your repositories keep an in-memory Map plus an optional ORM. Why, and what's the risk?</b><br>
+The dual mode lets the app run without a database (in-memory) for tests/local dev, and persist when a DB is wired. The risk is cache coherence — the in-memory copy can diverge from the DB if another instance writes, and there's no invalidation — plus unbounded memory growth. In production I'd drop the in-memory store and rely on the DB with proper caching where needed.</p>
+
+<p><b>Q130. How do you map a domain aggregate to a database row and back?</b><br>
+The repository converts the aggregate to an ORM entity on save (e.g. bill → <code>BillOrmEntity</code> with lines stored as JSONB, dates as ISO strings) and reconstructs it via <code>FaturaHyrese.rehydrate()</code> on read. The domain object never knows about TypeORM — the mapping is the repository's job, keeping the domain layer pure.</p>
+
+<p><b>Q131. You store line items as JSONB rather than a child table. Why, and what do you lose?</b><br>
+JSONB keeps the aggregate together — one row, one read, matching the DDD idea that lines live inside the bill aggregate. What I lose is easy relational querying (e.g. "all lines posting to account X" needs JSON operators or a scan) and column-level constraints on lines. For an aggregate that's always loaded whole, JSONB is a reasonable fit.</p>
+
+<p><b>Q132. How are schema changes / migrations handled?</b><br>
+This is a weak spot — the project leans on TypeORM entity definitions and manual/synchronize-style setup rather than a disciplined, versioned migration pipeline. Production needs explicit migration files run as a deploy step, never auto-synchronize against a production DB. The AI service even has a manual <code>ALTER TABLE</code> note for the vector column, which underscores the need.</p>
+
+<p><b>Q133. The dedup and outbox tables grow forever. What's your retention plan?</b><br>
+There isn't one yet, and at scale those tables would slow lookups. I'd add retention: archive/delete PUBLISHED outbox rows after a window, and age out old idempotency markers once events are far enough in the past that re-delivery is impossible. Both can be periodic jobs.</p>
+
+<p><b>Q134. Why one Postgres per service rather than schemas in one instance?</b><br>
+Physical separation makes the bounded context's data ownership unambiguous and lets each DB be sized, backed up, scaled, and secured independently (the AI DB even uses the pgvector image). Schemas in one instance would be cheaper to operate but couple availability and blast radius. For the demo it's separate instances; a cost-conscious deployment might consolidate to schemas.</p>
+
+<p><b>Q135. How do you guarantee consistency between Operations and Ledger without a shared transaction?</b><br>
+Eventual consistency via the outbox + idempotent consumer + saga. Operations commits locally and reliably emits the event; the ledger reliably and idempotently applies it; the storno saga reconciles multi-step flows with compensation. There's a brief window where Operations shows POSTED before the ledger has the entry, which is acceptable for this domain.</p>
+
+<hr>
+
+<h2>TIER 10 — Testing, quality &amp; CI (likely)</h2>
+
+<p><b>Q136. What's your overall testing strategy?</b><br>
+A test pyramid: many unit tests for domain logic and services (Jest), integration/e2e tests over HTTP (supertest), property-based tests for invariants (fast-check), a frontend unit test and a Playwright smoke test, plus a k6 load test and a custom coverage gate enforcing 70% across statement/branch/condition metrics.</p>
+
+<p><b>Q137. Explain your custom coverage gate — what are the four metrics?</b><br>
+<code>coverage-metrics.mjs</code> reads Istanbul's output and reports: statement coverage; decision (branch) coverage; condition coverage (share of binary/conditional sub-expressions executed); and a decision/condition composite (harmonic mean of the two). It's a JS-tooling analogue of MC/DC-style rigor, since JS lacks a true MC/DC engine. The build fails under 70% on any metric.</p>
+
+<p><b>Q138. Why did you build a custom gate instead of using Jest's coverage thresholds?</b><br>
+Jest thresholds only cover statements/branches/functions/lines. I wanted condition-level and decision/condition coverage to argue about logical-operand testing, which Istanbul exposes in its raw branch map but Jest doesn't threshold. The script computes those from <code>coverage-final.json</code>. It's a way to demonstrate deeper coverage analysis.</p>
+
+<p><b>Q139. What is property-based testing and what do you test with it?</b><br>
+Instead of fixed examples, fast-check generates many random inputs and checks that a property holds. I test that a bill line's <code>netAmount</code> always equals quantity × unit price across generated values. It's good at finding edge cases example tests miss.</p>
+
+<p><b>Q140. Your property suite tests only one property over 50 runs. Isn't that thin?</b><br>
+Fair — it's a demonstration of the technique more than thorough coverage. I'd extend it to tax computation, weighted-average cost invariants (e.g. average cost stays within min/max of inputs), and date-range logic, and raise the run count to hundreds. One property is a starting point, not the finish line.</p>
+
+<p><b>Q141. Frontend test coverage is very thin — one unit test and one smoke test. Why?</b><br>
+I prioritized backend correctness (where the money logic lives) and treated the UI as a thin client. That's a defensible prioritization for limited time but a genuine gap: there are no page/component tests and no full e2e user journey. I'd add React Testing Library tests for the pages and a Playwright flow (register → login → create bill → see it in the ledger).</p>
+
+<p><b>Q142. How do you test event-driven code and sagas?</b><br>
+The domain/service logic (state transitions, storno confirm/cancel) is unit-tested directly, and there's a storno-workflow e2e spec. What's not tested is true Kafka ordering/delivery under failure — those are hard in unit tests and would need test containers (a real Kafka in CI) to exercise the consumer/idempotency paths properly.</p>
+
+<p><b>Q143. What's not covered by your tests that worries you most?</b><br>
+Concurrency (double-posting, inventory oversell races), the actual VAT/accounting correctness end-to-end, multi-instance ledger behaviour, and security authorization paths (e.g. a data_clerk being refused the audit endpoint at the HTTP layer). Those are exactly the areas where a finance system fails dangerously, so they'd be my next tests.</p>
+
+<p><b>Q144. How does the k6 load test work and what does it measure?</b><br>
+It ramps virtual users (5 → 10 → 20 over 60s) and exercises create-bill, post-bill, trial-balance, and journal-entries endpoints, recording per-operation latency (p95/p99) and success rates. It characterizes throughput/latency under sustained load, though it doesn't profile memory or DB query plans.</p>
+
+<p><b>Q145. Why exclude DTOs, the event bus, and the repositories from coverage collection?</b><br>
+DTOs are declarative (decorators only), so coverage is noise; the event bus and repositories were excluded mainly because they're infrastructure with heavy I/O that's awkward to unit-test meaningfully. It's a pragmatic choice, but excluding the event bus is debatable since it's important — I'd prefer to test it with fakes rather than exclude it.</p>
+
+<hr>
+
+<h2>TIER 11 — Frontend (moderately likely)</h2>
+
+<p><b>Q146. Describe the frontend architecture.</b><br>
+A React 18 + TypeScript SPA built with Vite, routed by React Router, styled with Tailwind, talking to the gateway via an Axios client with an interceptor that injects the Bearer token, <code>x-tenant-id</code>, and <code>x-lang</code>. Five feature pages (IAM, Daily Ops, Compliance, Ledger, AI) plus a Layout and an ErrorBoundary. State is local React <code>useState</code>; auth/user live in localStorage.</p>
+
+<p><b>Q147. Why no Redux/Zustand/Context for state?</b><br>
+Each page is largely self-contained CRUD with little cross-page shared state, so local state plus localStorage for the session was enough and avoided boilerplate. The cost shows in the larger pages (Daily Ops holds many useState variables); if shared state or caching grew I'd introduce React Query for server state and possibly Zustand for the little global state there is.</p>
+
+<p><b>Q148. How does role-based routing work on the client?</b><br>
+A <code>Protected</code> wrapper checks the stored user's role against an allowed-roles list before rendering a route, and the Layout shows navigation by role. This is UX gating only — the real enforcement is the backend guards, since client checks can be bypassed.</p>
+
+<p><b>Q149. How is internationalization implemented?</b><br>
+A tiny custom i18n: a <code>tr(en, sq)</code> helper picks the string by current language, persisted in localStorage, with a CustomEvent + <code>useLanguage</code> hook to re-render on change. It's dependency-free but the translations are inline dual-strings scattered across pages, which doesn't scale to more languages — a key-based library (react-i18next) with translation files would.</p>
+
+<p><b>Q150. Several API calls swallow errors. What's the user impact?</b><br>
+Silent <code>.catch</code> blocks can leave stale data or give no feedback on failure, which is poor UX and can mask backend problems. I'd add consistent error handling — toasts/inline messages, a global Axios response interceptor for 401→logout and 5xx→notify, and loading/error states per page.</p>
+
+<p><b>Q151. The Axios interceptor is set up in two places. Why, and is that a bug risk?</b><br>
+It's redundancy from the build-out — both <code>main.tsx</code> and <code>api/client.ts</code> configure headers. It's a maintenance hazard (change one, forget the other). I'd consolidate to a single shared client module imported everywhere.</p>
+
+<p><b>Q152. How does the AI chat page work?</b><br>
+It posts the user's question to <code>/api/v1/ai/query</code>, then renders the answer with a confidence percentage and the cited sources, offers suggested-question chips, shows a loading state, and auto-scrolls. It's a thin chat UI over the RAG endpoint.</p>
+
+<p><b>Q153. Is the frontend accessible (a11y)?</b><br>
+Minimally — it's a clean Tailwind UI but without deliberate ARIA labelling or keyboard-navigation testing, and monospace IDs may hurt readability. Accessibility would be a focused improvement: semantic landmarks, ARIA, focus management, and contrast checks.</p>
+
+<p><b>Q154. How is the SPA served and how does deep-linking work?</b><br>
+It's built to static assets and served by nginx, which rewrites unknown paths to <code>index.html</code> so client-side routes deep-link correctly, and proxies <code>/api</code> to the gateway. <code>index.html</code> is sent no-cache so new deploys are picked up.</p>
+
+<hr>
+
+<h2>TIER 12 — Infrastructure, Docker &amp; Kubernetes (moderately likely)</h2>
+
+<p><b>Q155. How is the system containerized and orchestrated?</b><br>
+Each service has a multi-stage Dockerfile; docker-compose runs the whole stack locally (4 Postgres, Kafka+Zookeeper, all services, gateway, frontend) with health checks and dependency ordering. For production there are Kubernetes manifests: Deployments, StatefulSets for the DBs and Kafka, Services, Ingress, ConfigMaps, Secrets, HPAs, NetworkPolicies, and PodDisruptionBudgets.</p>
+
+<p><b>Q156. Explain your zero-downtime rollout strategy.</b><br>
+Deployments use RollingUpdate with <code>maxUnavailable: 0</code> and <code>maxSurge: 1</code>, plus <code>minReadySeconds: 10</code> and readiness probes — so a new pod must be ready before an old one is removed, keeping capacity up throughout. PDBs (minAvailable: 1) protect availability during voluntary disruptions like node drains.</p>
+
+<p><b>Q157. How does autoscaling work and what's missing?</b><br>
+HPAs scale services on CPU (70–80% targets, 2→8/10 replicas). What's missing is memory-based or custom-metric scaling — the AI service is memory-bound and Kafka-consumer lag would be a better scaling signal for the ledger than CPU. CPU-only is a simplification.</p>
+
+<p><b>Q158. What do your NetworkPolicies enforce?</b><br>
+Only backend-tier pods may reach Postgres (5432) and Kafka (9092); the frontend and gateway are walled off from the databases. That's good ingress segmentation. The gap is no egress policy — a compromised pod could call out anywhere — and no inter-service ingress restriction, which I'd tighten.</p>
+
+<p><b>Q159. Your secrets are in YAML in the repo. How should this be done?</b><br>
+The committed secrets are placeholders, but committing secret manifests at all is bad practice. Production should use sealed-secrets, external-secrets backed by Vault/cloud secret managers, or SOPS-encrypted files — with rotation and RBAC on secret access — so plaintext secrets never live in git.</p>
+
+<p><b>Q160. Your databases and Kafka are single-replica. Is that production-ready?</b><br>
+No — single-replica Postgres and a single Kafka broker are availability and durability risks (pod loss = downtime, and Kafka with replication-factor 1 can lose events). Production needs replicated Postgres (streaming replication/HA operator) with automated backups/PITR, and a 3-broker Kafka with <code>min.insync.replicas=2</code>. For the demo, single instances kept it simple.</p>
+
+<p><b>Q161. The frontend has no PodDisruptionBudget. What's the impact?</b><br>
+During a node drain both frontend replicas could be evicted at once, briefly taking the UI down. It's a one-line fix — add a PDB with minAvailable: 1 — and I'd include it.</p>
+
+<p><b>Q162. Containers run as root with no security context. Why does that matter?</b><br>
+Running as root widens the blast radius of a container escape. I'd add <code>runAsNonRoot</code>, a non-zero <code>runAsUser</code>, a read-only root filesystem, and dropped Linux capabilities. It's standard hardening that's currently absent.</p>
+
+<p><b>Q163. How does the gateway cope with pods restarting and changing IPs?</b><br>
+nginx is configured with a dynamic resolver (<code>resolver 127.0.0.11 valid=5s</code>) and proxies via variables, so it re-resolves the service DNS name regularly instead of caching a stale pod IP at startup. That keeps routing correct across rollouts.</p>
+
+<p><b>Q164. There's no observability stack. How would you monitor this in production?</b><br>
+Correct — there's no metrics/tracing/log aggregation yet. I'd add Prometheus + Grafana for metrics (request rates, latency, Kafka lag, HPA signals), OpenTelemetry tracing to follow a request across services and the event flow, and centralized logs (Loki/ELK) with correlation IDs, plus Alertmanager. For a distributed system this is essential, not optional.</p>
+
+<p><b>Q165. How do you deploy to multiple environments (dev/staging/prod)?</b><br>
+Currently the manifests hardcode values, so multi-env would mean duplicating ConfigMaps — a weakness. I'd template with Helm or Kustomize so one chart parameterizes per environment, and wire it into a CI/CD pipeline that builds images, runs the test+coverage gate, and promotes through environments.</p>
+
+<p><b>Q166. Why both a Pub/Sub emulator and Kafka in compose?</b><br>
+The architecture was designed transport-agnostic (the README references Google Cloud Pub/Sub as the target on GCP), so the emulator is there for that path, while Kafka is the primary local bus. The publisher/consumer abstraction means the messaging backend can change without touching domain code.</p>
+
+<hr>
+
+<h2>TIER 13 — Trade-offs, weaknesses &amp; "what would you do differently" (common closers)</h2>
+
+<p><b>Q167. What's the single biggest weakness in your system?</b><br>
+Security around credentials and tenant trust: Base64 "hashing", hand-rolled JWT with a hardcoded secret fallback, and tenant scoping that trusts a client header rather than the JWT. Any one is serious for a finance app. They're also all well-understood, low-effort fixes, which is how I'd frame it — known, bounded, and remediable.</p>
+
+<p><b>Q168. What's the biggest correctness weakness, separate from security?</b><br>
+VAT not being posted to the ledger, and money on floats with no enforced debit=credit invariant. Together they mean the books are net-only and not provably balanced at post time. Fixing the posting to include VAT lines, switching to decimals, and adding a balance assertion would make the ledger tax-correct and self-checking.</p>
+
+<p><b>Q169. If you rebuilt this from scratch, what would you change architecturally?</b><br>
+I'd start as a modular monolith and only extract services where scaling/ownership truly demanded it; bind tenant to the JWT and add Postgres RLS from day one; use decimals and a proper JWT/hash library from the start; wrap outbox writes in the domain transaction; and stand up observability early. Most of the weaknesses come from breadth-over-depth under time pressure, not wrong direction.</p>
+
+<p><b>Q170. Did microservices make this harder than it needed to be?</b><br>
+Yes, operationally — four databases, a broker, eventual consistency, and idempotency are a lot of moving parts for the user base. But it forced the interesting engineering (outbox, saga, RAG) the project set out to demonstrate, and the bounded contexts are real. The honest position: it's the right complexity for the learning goals, more than the business needs.</p>
+
+<p><b>Q171. Where could a single failure cause data loss or corruption today?</b><br>
+A Kafka broker loss (replication factor 1) could drop in-flight events; a missing saga timeout can wedge a bill in REVERSING; concurrent posts/issues can double-count or oversell; and the in-memory audit/registration data vanishes on restart. None is unfixable, but each is a real failure mode I can name precisely.</p>
+
+<p><b>Q172. How does the system behave under partial failure — say the ledger is down?</b><br>
+Operations keeps accepting and committing bills; their events queue in the outbox and retry with backoff until the ledger returns, at which point they're applied idempotently. So the write path stays available and self-heals. The user sees POSTED immediately; ledger reflection is delayed — acceptable eventual consistency.</p>
+
+<p><b>Q173. How would you scale this to thousands of tenants and high volume?</b><br>
+Partition Kafka by tenant for parallel consumption; move ledger reads from the in-memory array to SQL aggregation (or materialized views) so instances scale horizontally; add read replicas and connection pooling; consider per-large-tenant DB routing; cache the compliance bundle; and batch/queue embeddings. The app already keys everything by tenant, which makes most of this incremental.</p>
+
+<p><b>Q174. What's your disaster-recovery story?</b><br>
+Currently thin — no automated backups in the manifests. I'd add scheduled Postgres backups with point-in-time recovery to object storage, Kafka replication, infrastructure-as-code so the cluster is reproducible, and documented RTO/RPO targets with periodic restore drills.</p>
+
+<p><b>Q175. How do you ensure the AI's financial answers are trustworthy enough to act on?</b><br>
+I'd be candid that they're decision-support, not authoritative — the authoritative numbers are the ledger reports. RAG grounding, low temperature, and source citation reduce error, and I'd add validation of any figures/codes the model emits against the ledger before display, plus a clear UI disclaimer. The model assists interpretation; it never replaces the books.</p>
+
+<p><b>Q176. What did you learn building this?</b><br>
+That the hard part of microservices is data consistency, not the code split — outbox, idempotency, and sagas exist precisely because you gave up ACID. And that "make it work" and "make it secure/correct" are very different bars: the demo works, but a finance system's real bar is provable correctness and credential security, which is where my remaining gaps are.</p>
+
+<hr>
+
+<h2>TIER 14 — Deeper / specific code questions (less likely but possible)</h2>
+
+<p><b>Q177. Why is <code>BillStatus.Reversing</code> a distinct state rather than a boolean flag?</b><br>
+Because it's a genuine lifecycle state with its own legal transitions — from REVERSING you can only go to REVERTED (confirm) or back to POSTED (compensate), and you must reject normal mutations while a reversal is in flight. A dedicated enum state makes the state machine explicit and lets <code>ensureMutable()</code> block edits during the saga.</p>
+
+<p><b>Q178. What does <code>ensureMutable()</code> protect against?</b><br>
+It throws if a bill is POSTED, REVERSING, or REVERTED when a mutation is attempted, enforcing that posted/finalized bills are immutable and that you can't edit one mid-reversal. It centralizes the "is this change legal right now" guard.</p>
+
+<p><b>Q179. In the ledger, how is the original entry found for a reversal, and what if there are duplicates?</b><br>
+It searches for the tenant's entry with the matching reference, kind ORIGINAL, and no <code>reversedBy</code> set — i.e. the one unreversed original. If somehow two unreversed originals existed for a reference, it would pick the first; that's why the original-posting path should ensure one ORIGINAL per reference and why <code>reversedBy</code> guards against double-reversal.</p>
+
+<p><b>Q180. Why does the AI ingest use <code>deltaExpenses</code> rather than recomputing from scratch?</b><br>
+The ledger sends the incremental expense delta per journal event so the AI can maintain a running total cheaply (O(1) per event) instead of re-reading the whole ledger. The trade-off is that a missed event corrupts the running total until a replay — which is why replayability matters.</p>
+
+<p><b>Q181. Why is the expense-spike insight threshold hardcoded at €10,000?</b><br>
+It's a simple demonstrative rule, not a tuned model. It should be configurable per tenant (a small business and a large one have very different "spike" levels) or, better, statistical — flag deviations from the tenant's own historical baseline rather than an absolute number.</p>
+
+<p><b>Q182. The AI keeps an <code>ai_financial_events</code> table that the RAG path doesn't query. Is that redundant?</b><br>
+Somewhat — events are stored both there and as RAG chunks, so there's duplication. The table is a durable event log/read model while the chunks serve semantic search; they serve different access patterns but I could unify them or drop the unused one to reduce redundancy.</p>
+
+<p><b>Q183. How are provider order dependencies handled in the AI module, and is relying on declaration order safe?</b><br>
+The module comments note that the vector store must initialize before the seeder, and both before the AI service's init runs the seed. Relying on provider declaration order for lifecycle is fragile — Nest guarantees DI resolution order, not arbitrary init ordering across unrelated providers. The robust approach is explicit dependencies (inject and await) or lifecycle hooks that don't assume order.</p>
+
+<p><b>Q184. Why suffix payment journal references with <code>-PAYMENT</code>?</b><br>
+To distinguish the payment entry from the original posting under the same business reference, so a bill's "post" and "pay" journals are separate, queryable entries and so their idempotency keys don't collide.</p>
+
+<p><b>Q185. What does <code>invoiceSent</code> do in the ledger, and why nothing?</b><br>
+Nothing accounting-wise — it's logged as a commercial state change. Revenue is recognized at <code>invoiceCreated</code> (receivable/revenue), so "sent" is just a workflow transition (and the trigger for EDI delivery in Operations), not an accounting event. That avoids double-recognition.</p>
+
+<p><b>Q186. In EDI import, why hardcode <code>VAT-00-NO</code> and account <code>665-09</code>?</b><br>
+They're fallbacks so an imported bill is always valid even when the EDI payload lacks tax/account detail. The downside is lossy conversion — the original VAT treatment and proper expense account are dropped — so the importing company may need to correct the bill. A better design carries tax/account metadata across the EDI boundary.</p>
+
+<p><b>Q187. When company A reverses an invoice, does B's imported bill change?</b><br>
+No — the two documents are decoupled after the EDI copy. A's reversal doesn't propagate to B. In a fuller EDI protocol there'd be a cancellation message so B is notified and can reverse its imported bill, but that's not implemented.</p>
+
+<p><b>Q188. Why is the activity log capped (ring buffer) instead of unbounded?</b><br>
+To bound memory in the in-memory implementation. It's a demo convenience; the real fix is to persist activities to the DB with pagination rather than keep a fixed window in RAM, after which the cap disappears.</p>
+
+<p><b>Q189. The outbox flush takes 50 rows and is single-flight. Could it lag?</b><br>
+Yes — if delivery is slow, the single in-progress flush plus a 50-row batch every 1.5s bounds throughput, so a backlog could build. For higher volume I'd increase batch size, parallelize delivery, or run multiple dispatchers with row-level locking (<code>SELECT … FOR UPDATE SKIP LOCKED</code>) so they don't double-send.</p>
+
+<p><b>Q190. How would multiple outbox dispatchers avoid sending the same row twice?</b><br>
+With <code>SELECT … FOR UPDATE SKIP LOCKED</code> so each dispatcher claims a disjoint set of rows, or a status transition to IN_PROGRESS guarded by an optimistic version. Currently there's effectively one dispatcher per instance with a boolean guard, which is fine single-instance but not for horizontal scale.</p>
+
+<p><b>Q191. Why deterministic <code>idempotencyKey</code> generation in <code>enrich()</code> rather than random?</b><br>
+Because determinism is what makes dedup work — the same business event produced twice must yield the same key so the consumer recognizes the duplicate. A random key would defeat idempotency. The random part is the separate <code>eventId</code>, used as the unique storage anchor.</p>
+
+<p><b>Q192. How do you handle daylight saving / timezones in dates?</b><br>
+Dates are handled as date-only strings (YYYY-MM-DD) in many places and quarter boundaries are computed in UTC, which sidesteps most DST issues but can misattribute a transaction near midnight across timezones. For a single-country (Kosovo, one timezone) deployment it's adequate; multi-region would need explicit timezone handling.</p>
+
+<p><b>Q193. Why are some interfaces (e.g. invoice events) missing the <code>EventMeta</code> idempotency fields?</b><br>
+Inconsistency in the build-out — bill events extend <code>EventMeta</code> (eventId/idempotencyKey) but some invoice/inventory events don't, so they rely on the in-memory dedup path rather than the DB markers. I'd normalize all events to carry metadata so every consumer can dedup uniformly.</p>
+
+<p><b>Q194. The ledger's <code>notifyAi</code> falls back to a dynamic <code>import('axios')</code>. Why import lazily?</b><br>
+To avoid a hard dependency/load cost when Kafka is the active path — axios is only needed for the HTTP fallback, so it's imported on demand. It's a minor optimization; a static import would also be fine.</p>
+
+<p><b>Q195. Why <code>logLevel.NOTHING</code> on the Kafka clients?</b><br>
+To silence kafkajs's verbose internal logging so it doesn't drown the application logs. In production I'd route Kafka logs into the structured logging pipeline at an appropriate level rather than mute them entirely, so broker issues are visible.</p>
+
+<p><b>Q196. How are Kafka topics created?</b><br>
+The producers ensure the topic exists on startup via the admin client (creating it with 1 partition / replication-factor 1 if absent). That's convenient for dev but in production topics should be provisioned deliberately with proper partition counts and replication, not auto-created with single-replica defaults.</p>
+
+<p><b>Q197. What ORM-level concurrency control do you have — optimistic locking?</b><br>
+None currently — there's no version column or optimistic-lock check, so last-write-wins and the concurrency races (double-post, oversell) are possible. Adding a TypeORM <code>@VersionColumn</code> and retrying on version conflict, or pessimistic row locks for the critical updates, is the fix.</p>
+
+<p><b>Q198. How is the health of a service determined for k8s probes?</b><br>
+Each service exposes a health endpoint hit by readiness/liveness probes. They're shallow (process-up) rather than deep (checking DB/Kafka connectivity), so a service can report healthy while a dependency is down. Deeper readiness checks (verify DB and broker reachability) would make rollouts and routing safer.</p>
+
+<p><b>Q199. Why is the global API prefix <code>/api/v1</code> — do you have a versioning strategy?</b><br>
+The <code>v1</code> prefix reserves room to evolve the API without breaking clients — a future <code>v2</code> can run alongside. Beyond the prefix there's no formal deprecation policy yet; I'd add versioned contracts and a deprecation window when a breaking change is needed.</p>
+
+<p><b>Q200. Walk me through exactly what happens if two users click "Post" on the same draft bill simultaneously.</b><br>
+Both requests load the DRAFT aggregate, both pass the "status is Draft" check, both set POSTED and save, and — critically — both could enqueue a <code>billPosted</code> event. The idempotency key (<code>billPosted:tenant:Bill-id</code>) saves the ledger from double-posting the journal, so the accounting stays correct, but two activity entries and a race on the write remain. A row lock or optimistic version on the bill is the clean fix; the idempotent consumer is the safety net that currently prevents the worst outcome.</p>
+
+<hr>
+
+<h2>TIER 15 — Conceptual / theory checks examiners use to test understanding</h2>
+
+<p><b>Q201. Define eventual consistency and where the user would notice it.</b><br>
+It means replicas/services converge to a consistent state after a delay, not instantly. A user would notice it as a brief lag between a bill showing POSTED in Operations and its journal entry appearing in the Ledger/reports — usually sub-second here, but unbounded if a service is down (the event waits in the outbox).</p>
+
+<p><b>Q202. What is the CAP theorem and where does your system sit?</b><br>
+Under a network partition you can't have both consistency and availability. For the write path I chose availability + partition tolerance (AP) with eventual consistency — Operations keeps accepting bills even if the ledger is unreachable. Within a single service's database I still get strong consistency (CP-like) for that local transaction.</p>
+
+<p><b>Q203. What is idempotency and why is it essential in event systems?</b><br>
+An operation is idempotent if doing it multiple times has the same effect as doing it once. It's essential because at-least-once delivery means consumers will sometimes see duplicates; idempotent processing (dedup keys, upserts, status guards) makes duplicates harmless, which is how you achieve correct results without exactly-once delivery.</p>
+
+<p><b>Q204. Difference between orchestration and choreography in sagas?</b><br>
+Orchestration has a central coordinator that tells each service what to do next; choreography has services react to events and emit their own, with no central brain. Choreography is more decoupled but harder to reason about as steps grow; orchestration is easier to monitor/modify but adds a coordinator. I used choreography for the two-step storno.</p>
+
+<p><b>Q205. What is the dual-write problem and how does the outbox solve it?</b><br>
+Dual-write is updating two systems (DB + broker) without a shared transaction, risking one succeeding and the other failing — leaving them inconsistent. The outbox writes the event into the same database as the state change, then a dispatcher publishes from there, so the event is never lost and the broker write is decoupled and retryable.</p>
+
+<p><b>Q206. What does ACID mean and which parts do you give up across services?</b><br>
+Atomicity, Consistency, Isolation, Durability. Within one service's Postgres I keep all four. Across services I give up cross-service atomicity and isolation — there's no global transaction — and recover the needed guarantees with sagas, idempotency, and eventual consistency.</p>
+
+<p><b>Q207. Why are JWTs called "stateless" and what's the cost?</b><br>
+Stateless because the server stores no session — the token itself carries the claims and is verified by signature, so any instance can authenticate a request without shared session storage. The cost is revocation: you can't easily invalidate a token before it expires, which is the refresh-token/blacklist discussion.</p>
+
+<p><b>Q208. What is a value object and why immutable?</b><br>
+A value object is defined by its attributes, has no identity, and is interchangeable when equal (a BillLine, a Money). Immutability means it can be shared safely, can't be corrupted after construction, and forces "changes" to create new instances — which keeps the aggregate's invariants intact.</p>
+
+<p><b>Q209. What is an anti-corruption layer and do you have one?</b><br>
+It's a translation layer that stops another system's model leaking into yours. The repositories' map-to/from-domain and the event DTOs act like one — the ledger's notion of a "journal entry" is built from Operations' event shape, not from Operations' internal model, so each context keeps its own language.</p>
+
+<p><b>Q210. Explain cosine similarity in one breath and why it suits embeddings.</b><br>
+It measures the angle between two vectors, ignoring magnitude, so it compares direction/meaning rather than length. Text embeddings encode semantic meaning as direction in high-dimensional space, so two passages about the same topic have a small angle (high cosine), which is exactly what you want for "find related chunks".</p>
+
+<p><b>Q211. What's the difference between authentication and authorization in your app?</b><br>
+Authentication is proving who you are — the JWT issued at login and verified by the guard. Authorization is what you're allowed to do — the RolesGuard hierarchy and (should-be) tenant scoping. The guard chain does authn first, then authz.</p>
+
+<p><b>Q212. Why is double-entry "self-checking" and how does that help debugging?</b><br>
+Because every entry must balance, the sum of all debits must equal the sum of all credits across the whole ledger at all times. If they ever diverge, you have a provable bug — which is why the missing post-time balance assertion is worth adding: it turns a class of errors into an immediate, localized failure.</p>
+
+<p><b>Q213. What is back-pressure and where would you apply it?</b><br>
+Back-pressure is signalling upstream to slow down when a consumer can't keep up. I'd apply it at the Kafka consumers (pause partitions when processing lags) and at the gateway (rate limiting), so a burst of bills doesn't overwhelm the ledger or the AI embedding calls.</p>
+
+<p><b>Q214. What's the difference between horizontal and vertical scaling, and which does your design favour?</b><br>
+Vertical is a bigger machine; horizontal is more instances. The stateless services favour horizontal scaling (HPA adds replicas), which is the cloud-native default. The blockers to true horizontal scale are the in-memory ledger projection and single-instance assumptions, which I'd remove as discussed.</p>
+
+<p><b>Q215. Why might you choose a modular monolith over microservices for a startup?</b><br>
+Lower operational cost, simple transactions (one DB, real ACID), easier debugging and deployment, and no eventual-consistency tax — while still keeping clean module boundaries so you can extract services later if scale demands. It's often the pragmatic first step; my <code>src/</code> monolith embodies that option.</p>
+
+<hr>
+
+<h2>TIER 16 — "What if" and improvement questions (least likely, but good to have)</h2>
+
+<p><b>Q216. What if a tenant needs an immutable, tamper-evident audit trail for tax authorities?</b><br>
+I'd persist all events/journal entries append-only and add a hash chain — each record stores the hash of the previous plus its own content — so any later tampering breaks the chain and is detectable. Optionally anchor periodic digests externally. The append-only ledger is already half of this; the hashing makes it tamper-evident.</p>
+
+<p><b>Q217. How would you implement GDPR "right to be forgotten" given an append-only ledger?</b><br>
+Financial records legally must be retained, so true deletion conflicts with tax law. The reconciliation is to keep the financial facts but pseudonymize/crypto-shred personal data: store personal data encrypted with a per-subject key and delete the key on erasure, and ensure descriptions never contain PII (which the compliance rules already push toward).</p>
+
+<p><b>Q218. How would you add real-time notifications (e.g. "your invoice was paid")?</b><br>
+Since events already flow through Kafka, I'd add a notifications service that consumes the relevant events and pushes via WebSocket/SSE to the frontend (and email/SMS). The event-driven backbone makes this additive — no changes to existing services.</p>
+
+<p><b>Q219. How would you support offline-first or intermittent connectivity for users?</b><br>
+Queue user actions client-side (IndexedDB) and sync when online, with idempotency keys on submissions so retries don't duplicate — the backend's idempotency already supports safe retries. Conflict handling would need optimistic concurrency on the server.</p>
+
+<p><b>Q220. How would you A/B test or canary a new ledger version safely?</b><br>
+With a service mesh or weighted Kubernetes routing, send a small traffic slice (or a subset of tenants) to the new version, compare metrics/error rates, and roll forward or back. Because the ledger is idempotent and event-sourced from Kafka, a canary can even replay events to validate parity before taking live traffic.</p>
+
+<p><b>Q221. How would you integrate with Kosovo's e-invoicing/fiscalization system if mandated?</b><br>
+Add an adapter in the EDI/operations boundary that formats invoices to the official schema and submits to the tax authority's API, storing the returned fiscal number on the invoice. The EDI inbox concept already models cross-party document exchange, so this is an additional outbound channel.</p>
+
+<p><b>Q222. How would you handle a tax rule that depends on the counterparty's country (e.g. EU vs non-EU)?</b><br>
+Extend the tax category model with conditions (counterparty country, goods vs services) and evaluate them in the compliance validation engine, which would move from a fixed rule list toward a small rules engine. The reverse-charge categories are the first step toward this.</p>
+
+<p><b>Q223. If the AI gave a wrong financial figure and a user acted on it, who's responsible — and how does your design limit that?</b><br>
+The authoritative source is always the ledger reports, and the AI is positioned as advisory with cited sources and a disclaimer; I'd also validate emitted figures against the ledger before display. Design-wise, never letting the AI write to the books (it's read-only) ensures it can't cause financial state changes, only inform.</p>
+
+<p><b>Q224. How would you reduce LLM cost at scale?</b><br>
+Cache embeddings (already upserted, not recomputed), cache answers to common questions, use a smaller/cheaper model for routing and reserve the strong model for synthesis, batch embedding calls, and apply a relevance threshold so trivial queries skip the LLM and return the snapshot directly.</p>
+
+<p><b>Q225. How would you test that tenant isolation truly holds?</b><br>
+A dedicated security test: seed data for tenants A and B, authenticate as A, and assert every endpoint (and the AI retrieval) returns only A's data even when B's ids/headers are supplied. I'd run it in CI so a regression that leaks across tenants fails the build. This directly targets the header-trust weakness.</p>
+
+<p><b>Q226. What would break first if you onboarded a 10,000-employee enterprise instead of an SME?</b><br>
+The in-memory ledger projection (memory + multi-instance correctness), the single Kafka partition (throughput), the lack of period locking and approval workflows, and the weighted-average inventory at high transaction rates. Enterprises also expect SSO, granular permissions, and audit — all of which are beyond the current scope.</p>
+
+<p><b>Q227. How would you add approval workflows (maker-checker) for large payments?</b><br>
+Introduce a pending-approval state in the relevant aggregate and a separate approve action gated by role, recording who approved. It fits the existing state-machine pattern — add states and transitions plus authorization checks — and emits events only after approval.</p>
+
+<p><b>Q228. How would you migrate the in-memory audit log to persistent without downtime?</b><br>
+Add the DB-backed write path alongside the in-memory one (dual-write), backfill nothing (it was ephemeral anyway), then switch reads to the DB and remove the in-memory store. Because it's append-only and not on the critical financial path, the migration is low-risk.</p>
+
+<p><b>Q229. Could you make storno synchronous to avoid the saga complexity?</b><br>
+Only by coupling Operations and Ledger in one transaction, which the database-per-service boundary forbids, or by a synchronous call that blocks Operations on Ledger availability and reintroduces the dual-write problem. The saga is the price of the decoupling; making it synchronous would trade resilience for simplicity.</p>
+
+<p><b>Q230. If asked to remove Kafka entirely, what changes?</b><br>
+The publisher already has an HTTP fallback, so functionally it runs without Kafka — events POST directly to consumers. What I'd lose is durability, replay, consumer-group fan-out, and buffering during outages, so I'd need a persistent queue substitute. It proves the messaging layer is abstracted, but Kafka earns its place.</p>
+
+<hr>
+
+<h2>TIER 17 — Rapid-fire factual checks (examiners verify you know your own code)</h2>
+
+<p><b>Q231. What port is each service on?</b><br>
+gateway 3000, iam 3001, compliance 3002, operations 3003, ledger 3004, ai 3005, frontend 80 (behind nginx).</p>
+
+<p><b>Q232. What are the two Kafka topics?</b><br>
+<code>operations.events</code> (Operations → Ledger) and <code>ledger.events</code> (Ledger → AI, and Ledger → Operations for saga replies).</p>
+
+<p><b>Q233. What's the JWT expiry?</b><br>
+8 hours (28800 seconds), with no refresh token.</p>
+
+<p><b>Q234. What embedding model and dimensionality?</b><br>
+Gemini <code>text-embedding-004</code>, 768 dimensions.</p>
+
+<p><b>Q235. What LLM model is configured?</b><br>
+Gemini (the configured <code>GEMINI_MODEL</code>, e.g. a Gemini Flash model) via the <code>generateContent</code> REST API.</p>
+
+<p><b>Q236. Which SKA codes are cash, payable, receivable, revenue, COGS?</b><br>
+Cash 100, accounts payable 220, accounts receivable 140, revenue/sales 700, COGS 500; inventory 125; other operating expense 665-09.</p>
+
+<p><b>Q237. What's the bill state machine?</b><br>
+DRAFT → POSTED → PAID; POSTED → REVERSING → REVERTED (confirm) or REVERSING → POSTED (compensate).</p>
+
+<p><b>Q238. What's the NUI format?</b><br>
+Nine digits beginning with 8 — regex <code>^8\d{8}</code>.</p>
+
+<p><b>Q239. What's the outbox retry backoff?</b><br>
+Exponential, <code>2^attempts</code> seconds, capped at 60 seconds, with status PENDING/FAILED/PUBLISHED and a <code>nextAttemptAt</code>.</p>
+
+<p><b>Q240. What's the coverage threshold and which metrics?</b><br>
+70% on statement, decision (branch), condition, and the decision/condition composite, enforced by <code>coverage-metrics.mjs</code>.</p>
+
+<p><b>Q241. What does the AI vector search filter on?</b><br>
+<code>tenant_id IS NULL OR tenant_id = :tenant</code>, ordered by cosine distance, limit 8.</p>
+
+<p><b>Q242. How many VAT categories and compliance rules are there?</b><br>
+Roughly 14 Kosovo VAT categories and 9 compliance rules (CR-001…CR-009) across bill/invoice/journal/GDPR/accounting/inventory contexts.</p>
+
+<p><b>Q243. What's the inventory costing method?</b><br>
+Weighted-average unit cost, recomputed on each RECEIPT, with oversell prevention on ISSUE.</p>
+
+<p><b>Q244. Which DB image does the AI service use and why?</b><br>
+<code>pgvector/pgvector:pg16</code>, because it needs the vector type and HNSW index for embeddings.</p>
+
+<p><b>Q245. How is the trial balance "balanced" check done?</b><br>
+Total debits minus total credits within €0.01 is reported as balanced in <code>getSummary()</code>.</p>
+
+<hr>
+
+<h2>TIER 18 — Curveballs &amp; pressure questions</h2>
+
+<p><b>Q246. "Your password hashing is wrong — did you not know better?"</b><br>
+I did — the code comment marks it explicitly as a demo placeholder with bcrypt/argon2 named as the production choice. I prioritized building the distributed-systems features the project is about and left a clearly-flagged stub for the credential store. It's a one-function change to argon2id with a salt, and I'd do it before any real deployment.</p>
+
+<p><b>Q247. "Isn't most of the 'AI' just a wrapper around Gemini?"</b><br>
+The LLM call is one step; the engineering is the RAG pipeline around it — embedding, a pgvector store with an HNSW index, tenant-scoped retrieval, a seeded compliance corpus, grounded prompt construction, and a fallback path. Without that the model would hallucinate or leak across tenants. The value is the grounding and isolation, not the API call.</p>
+
+<p><b>Q248. "If I delete one Kafka message, what breaks, and would you even notice?"</b><br>
+If it's an unprocessed business event, the corresponding journal/AI update never happens, and today you might not notice immediately because there's no reconciliation/alerting — that's a real observability gap. With replay (re-consume from offset) I can recover it, and I'd add a reconciliation check (e.g. Operations vs Ledger entry counts per tenant) to detect such drift.</p>
+
+<p><b>Q249. "Prove your ledger can't silently go out of balance."</b><br>
+I can't prove it today, because there's no post-time assertion that debits equal credits — that's the gap. I can show every posting path constructs balanced pairs, and that <code>getSummary()</code> reports the global balance, but the guarantee should be enforced, not conventional. Adding the invariant check makes it provable and is my first ledger fix.</p>
+
+<p><b>Q250. "Why should I trust an SME's books to an eventually-consistent system?"</b><br>
+Because the consistency window is small and bounded, the source of truth (each service's Postgres) is strongly consistent locally, and the design self-heals via outbox/idempotency rather than losing data. The user-visible guarantee is "your bill is safely recorded immediately; its ledger reflection follows within moments and is never lost." For batch-oriented accounting, that's appropriate — books are read in reports, not microseconds after entry.</p>
+
+<p><b>Q251. "What stops me, as a logged-in user, from reading another company's ledger right now?"</b><br>
+Honestly, on the endpoints that trust <code>x-tenant-id</code>, the main barrier is that you'd have to supply another tenant's id and the UI won't — which is not real security. The fix I've identified is to derive tenant strictly from the verified JWT and add Postgres RLS, after which the database itself refuses cross-tenant reads. I'd call this the highest-priority hardening item.</p>
+
+<p><b>Q252. "You list many weaknesses — does the system actually work?"</b><br>
+Yes — the full happy path works end-to-end: register, log in, create and post bills and invoices, run inventory, see balanced journals and reports, reverse via the saga, and query the AI. The weaknesses I'm naming are the difference between a working demo and a production-hardened financial product, and being able to enumerate them precisely is part of engineering maturity.</p>
+
+<p><b>Q253. "Which one fix gives the most safety for the least effort?"</b><br>
+Binding tenant to the JWT (delete the header trust and the <code>'public'</code> default) — a small change that closes the cross-tenant data-leak risk. Close behind: swapping Base64 for argon2 and adding the debit=credit assertion. All three are low-effort, high-impact.</p>
+
+<p><b>Q254. "If your examiner were a CTO, why would they not deploy this tomorrow?"</b><br>
+Credential security (hashing/JWT/secrets), tenant-trust, no TLS, single-replica data stores with no backups, no observability, VAT not posted, and money on floats. None is architectural — they're hardening and correctness items — but collectively they're the gap between "demonstrates the architecture" and "handles real money safely."</p>
+
+<p><b>Q255. "Defend keeping the in-memory ledger projection."</b><br>
+For a single instance at SME scale it makes reads instant and the code simple, and it's always backed by Postgres as the source of truth, so it's a cache, not the system of record. I'd defend it as a reasonable optimization for the current scale while acknowledging it must move to SQL aggregation the moment the ledger scales horizontally.</p>
+
+<hr>
+
+<h2>TIER 19 — Process, scope &amp; reflection</h2>
+
+<p><b>Q256. How did you decide what was in scope versus out?</b><br>
+I anchored on the bounded contexts that make a finance tool useful (auth, compliance, operations, ledger) and added AI as the differentiator. I deliberately kept depth where correctness matters most (the event/saga flow, double-entry) and accepted stubs where it didn't change the architecture story (password hashing, in-memory audit). The scope was "demonstrate the architecture convincingly," not "ship to production."</p>
+
+<p><b>Q257. How did you test the system manually during development?</b><br>
+Via docker-compose bringing up the whole stack with health checks, then exercising the API through the frontend and direct calls, watching events flow across services in the logs, and verifying journals balanced and reports rendered. The k6 script gave a basic load picture.</p>
+
+<p><b>Q258. What was the hardest bug or design problem you hit?</b><br>
+Getting the storno saga and idempotency right — making reversal eventually consistent and safe under retries/duplicates without a distributed transaction, including the compensation path when the ledger can't find the original. It's the part where the distributed-systems theory had to become working code.</p>
+
+<p><b>Q259. If a teammate joined tomorrow, how would they get productive?</b><br>
+The README documents the architecture, services, ports, event flow, and API; <code>docker compose up</code> brings everything up; and the DDD layering means a new feature follows the same domain/application/infrastructure pattern. The bounded contexts let them work in one service without understanding all five.</p>
+
+<p><b>Q260. How does this project demonstrate growth beyond coursework?</b><br>
+It goes past CRUD into distributed-systems concerns most coursework skips — eventual consistency, the outbox and saga patterns, idempotency, RAG over a vector DB, multi-tenancy, and Kubernetes operexcellence (HPA/PDB/network policy). Equally, being able to critique my own security and correctness gaps shows engineering judgment, not just implementation.</p>
+
+<hr>
+
+<h2>TIER 20 — Final catch-all (least likely)</h2>
+
+<p><b>Q261. Why TypeScript over plain JavaScript for a financial system?</b><br>
+Static types catch a large class of errors at compile time (wrong shapes, null handling, enum misuse), which matters when money and state machines are involved, and they make the domain model self-documenting. NestJS is TypeScript-first, and the decorators that drive DI/validation rely on type metadata.</p>
+
+<p><b>Q262. Why NestJS over Express or Fastify directly?</b><br>
+Nest gives structure out of the box — modules, dependency injection, guards, pipes, lifecycle hooks — which suits a layered DDD design across multiple services. Express alone would mean hand-rolling all of that. Nest still runs on Express underneath, so I keep the ecosystem.</p>
+
+<p><b>Q263. Why Vite over Create React App?</b><br>
+Vite is faster (native ESM dev server, esbuild/SWC transforms), better maintained, and produces smaller optimized builds. CRA is effectively deprecated. For a modern React SPA it's the default choice.</p>
+
+<p><b>Q264. Why Tailwind over a component library?</b><br>
+Utility-first CSS gave fine control over a custom Kosovo-branded design without fighting a component library's opinions, and the design tokens live in one config. The trade-off is verbose class lists and that I hand-built components a library would provide; for a bespoke look it was the right call.</p>
+
+<p><b>Q265. Why store dates as strings rather than timestamps in some entities?</b><br>
+Accounting works in calendar dates (date of issue, due date, posting date), not instants, so date-only strings (YYYY-MM-DD) avoid spurious time/timezone components and match how reports group by day/quarter. Where true timestamps matter (createdAt), I use <code>timestamptz</code>.</p>
+
+<p><b>Q266. How big is the codebase and how is it organized?</b><br>
+Roughly a hundred-plus TypeScript files split across the monolith reference (<code>src/</code>), the five deployable services (<code>services/</code>), the React frontend, the test suite, k8s manifests, and scripts. Each service mirrors the same domain/application/infrastructure layout for consistency.</p>
+
+<p><b>Q267. What licensing and third-party considerations apply?</b><br>
+The project is MIT-licensed. Key third parties are NestJS, TypeORM, kafkajs, pgvector, React/Vite/Tailwind, and Google Gemini — the last being a paid external API with data-processing implications (Q116) that a production deployment must contract for.</p>
+
+<p><b>Q268. How would you internationalize beyond Albanian and English?</b><br>
+Move from inline <code>tr(en, sq)</code> strings to a key-based i18n library with per-locale JSON files, externalize the compliance translations into the same system, and ensure date/number/currency formatting is locale-aware. The architecture already threads an <code>x-lang</code> header through to compliance, so the backend is partly ready.</p>
+
+<p><b>Q269. What metrics would you put on a dashboard for the business, not just ops?</b><br>
+Per-tenant: active users, documents posted, total payables/receivables, overdue invoices, inventory value, and AI query volume. Ops-wise: event lag, error rates, p95 latency. The ledger and event streams already contain the raw data to derive these.</p>
+
+<p><b>Q270. If this became a real company, what's the 6-month engineering roadmap?</b><br>
+Month 1–2: security hardening (hashing, JWT library, JWT-bound tenancy + RLS, TLS, secrets management) and the VAT/decimal correctness fixes. Month 3–4: HA data stores with backups, observability, saga timeouts, and concurrency controls. Month 5–6: e-invoicing/fiscalization integration, approval workflows, richer reporting, and a hardened multi-environment CI/CD. Throughout: grow the test suite, especially security and concurrency tests.</p>
+
+<hr>
+<p><i>End of question bank — 270 questions. Tiers 1–6 are where the bulk of viva marks are decided; rehearse those until the answers are reflexive, and keep the honest "acknowledge → justify → fix" structure for every weakness. Good luck.</i></p>
+
+</body>
+</html>
