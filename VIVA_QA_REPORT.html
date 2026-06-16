@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Guri Finance — Viva Question Bank (Report + Code)</title>
+<style>
+body{font-family:Georgia,'Times New Roman',serif;max-width:900px;margin:40px auto;padding:0 24px;line-height:1.5;color:#1a1a1a}
+h1{font-size:26px;border-bottom:3px solid #00152a;padding-bottom:8px}
+h2{font-size:20px;color:#00152a;margin-top:34px;border-bottom:1px solid #ccc;padding-bottom:4px}
+p.q{margin:16px 0 4px}
+p.a{margin:0 0 14px;color:#222}
+b{color:#00152a}
+code{background:#f2f4f7;padding:1px 5px;border-radius:4px;font-family:Consolas,monospace;font-size:0.92em}
+.intro{background:#f7f9fb;border-left:4px solid #00152a;padding:12px 18px;border-radius:4px}
+hr{border:none;border-top:1px solid #ddd;margin:28px 0}
+</style>
+</head>
+<body>
+
+<h1>Guri Finance — Viva Question Bank (Report + Code Defence)</h1>
+<div class="intro">
+<p>This bank is built from <b>both</b> your dissertation and your codebase. Everything written in the report is treated as a claim you are committing to defend, so the answers below back those claims (e.g. bcrypt password hashing, enforced tenant isolation, coverage measured on the services). Questions are ordered <b>most likely → least likely</b>, opening with the technology-choice questions examiners almost always ask first.</p>
+<p><b>Golden rule for every answer:</b> state the decision, give the <i>reason rooted in your requirements</i> (compliance, double-entry correctness, distributed-systems reliability), and name the alternative you rejected and why. When asked about a limitation, the report already lists nine — own them as deliberate, documented technical debt, not oversights.</p>
+</div>
+
+<h2>TIER 1 — Technology choices &amp; rationale (almost certain openers)</h2>
+
+<p class="q"><b>Q1. Why did you choose NestJS for the backend?</b></p>
+<p class="a">Three reasons from the report: it enforces DDD structure, it is type-safe, and it aligns with the frontend. The <code>@Module</code> decorator makes a bounded context an explicit architectural unit and forces you to declare what a module imports and exposes — so Operations' dependency on Compliance is a declared dependency, not an arbitrary function call. It is TypeScript-first with <code>class-validator</code> on every DTO, rejecting invalid financial data at the API boundary, and its IoC container manages repositories, Kafka consumers and HTTP clients via constructor injection.</p>
+
+<p class="q"><b>Q2. Why NestJS over plain Express.js?</b></p>
+<p class="a">Express has no module system — it relies on middleware chains, and research on large Node.js codebases shows that without architectural enforcement, business logic leaks across middleware. For a five-service DDD system that boundary discipline matters. NestJS gives the <code>@Module</code> structure, dependency injection, guards, pipes and built-in transport adapters (Kafka, TCP, gRPC) out of the box, where Express would mean wiring all of that manually and losing the bounded-context clarity.</p>
+
+<p class="q"><b>Q3. Why not Spring Boot, which is very mature for microservices?</b></p>
+<p class="a">Two reasons. First, language alignment: Spring Boot is Java, which creates a language boundary with my React/TypeScript frontend and prevents sharing type-safe contracts across layers — NestJS keeps TypeScript end to end. Second, memory: each Spring Boot microservice on a JVM typically uses 256–512 MB of heap; across five services on Kubernetes that is substantial overhead. Spring Boot is excellent and production-proven, but for a one-person, TypeScript-unified, resource-conscious project NestJS was the better fit (full comparison is in Appendix A).</p>
+
+<p class="q"><b>Q4. Why Apache Kafka as the message broker?</b></p>
+<p class="a">Correctness through ordering. A <code>billPaid</code> event must never be processed before the <code>billPosted</code> event for the same bill, or the journal entry would reference a non-existent posting. Kafka guarantees order within a partition, so keying messages by tenant ID guarantees per-tenant ordering. It also retains the event log permanently, enabling replay. I considered RabbitMQ and Google Pub/Sub; RabbitMQ can achieve ordering only with awkward per-key consumer setups, so Kafka was the cleaner choice.</p>
+
+<p class="q"><b>Q5. You started on Google Pub/Sub and switched to Kafka in Iteration 2 — why?</b></p>
+<p class="a">Two practical reasons. Local development on Pub/Sub needs either a live GCP project or its emulator, whereas Kafka runs as an ordinary Docker container alongside the rest of the stack. And Pub/Sub flushes its logs periodically, while Kafka stores topic events durably, allowing replay — which is valuable for an auditable financial event stream and for rebuilding read models.</p>
+
+<p class="q"><b>Q6. Why PostgreSQL, and why one instance per service?</b></p>
+<p class="a">The Ledger and Operations contexts need strong ACID guarantees — double-entry posting must commit debits and credits atomically or fail entirely, which eventually-consistent stores like MongoDB or Cassandra can't promise. PostgreSQL gives that plus clean TypeORM type compatibility. Each bounded context (<code>guri_iam</code>, <code>guri_operations</code>, <code>guri_ledger</code>, <code>guri_ai</code>) owns a separate physical database so no service can JOIN across another's schema — all interaction goes through event or HTTP contracts, avoiding the shared-database anti-pattern.</p>
+
+<p class="q"><b>Q7. Why pgvector instead of a dedicated vector database like Pinecone or Weaviate?</b></p>
+<p class="a">pgvector adds vector search inside PostgreSQL, so the AI service stores 768-dimension embeddings without introducing a whole new database technology. Because it speaks PostgreSQL's wire protocol, it reuses the same TypeORM connection configuration as every other service. That is polyglot persistence done pragmatically — the right tool (vector search) without the operational cost of a separate specialized store.</p>
+
+<p class="q"><b>Q8. Why a microservices architecture rather than a monolith?</b></p>
+<p class="a">The domain decomposes into genuine bounded contexts (IAM, Compliance, Operations, Ledger, AI) with different consistency, scaling and change-rate needs. Microservices give independent deployability, polyglot persistence (PostgreSQL for the ledger's ACID needs, pgvector for AI), and let each context scale on its own via Kubernetes HPAs. Crucially it also let me demonstrate the distributed-systems patterns the project is about — Saga, transactional outbox, idempotent consumers — which only exist across service boundaries.</p>
+
+<p class="q"><b>Q9. Why React, Vite and TypeScript for the frontend?</b></p>
+<p class="a">TypeScript on the frontend mirrors the TypeScript backend, so types and contracts are consistent across the stack — one of the reasons NestJS was chosen too. React is the dominant SPA library with the richest ecosystem, and Vite gives a fast modern dev/build pipeline. Together they made a responsive single-page app with role-aware routing straightforward to build solo.</p>
+
+<p class="q"><b>Q10. Why TypeORM as the ORM?</b></p>
+<p class="a">It is TypeScript-first and integrates cleanly with NestJS dependency injection, and it has strong PostgreSQL type compatibility, which the report explicitly cites as part of why PostgreSQL was chosen. It let me map domain aggregates to tables while keeping the domain layer free of persistence concerns, and it coexists with the raw pgvector access the AI service needs.</p>
+
+<p class="q"><b>Q11. Why Docker and Kubernetes rather than a simpler deployment?</b></p>
+<p class="a">The system is inherently multi-process — five services, four databases, Kafka and Zookeeper — so containerization is the natural unit of deployment, and Docker Compose orchestrates a correct local start order (databases, then Zookeeper/Kafka, then services). Kubernetes then provides the production concerns a financial platform needs: rolling updates for zero-downtime, HPAs for independent scaling, PodDisruptionBudgets for availability during maintenance, StatefulSets with persistent volumes for the data stores, and managed secrets.</p>
+
+<p class="q"><b>Q12. Why Gemini for the LLM and embeddings?</b></p>
+<p class="a">Gemini provided a capable hosted generative model plus the <code>text-embedding-004</code> embedding model (768 dimensions) under one API, which kept the RAG pipeline simple for a solo project. I treat it as a swappable reasoning layer, not a core dependency — the report's headline future-work item is replacing Gemini with a self-hosted model in the same cluster so financial data never leaves the tenant's infrastructure.</p>
+
+<hr>
+
+<h2>TIER 2 — Problem, motivation, gap analysis &amp; positioning (very likely)</h2>
+
+<p class="q"><b>Q13. What problem does Guri Finance solve and why does it matter?</b></p>
+<p class="a">Kosovo law (No. 06/L-032 on Accounting, Financial Reporting and Auditing) legally obliges every enterprise to keep accounts on the Standard Chart of Accounts (SKA) and file ATK-format reports. 99.9% of Kosovo firms are SMEs contributing ~81% of GDP, yet their financial digitalization is underdeveloped due to cost, complexity and lack of staff. My research found no product that simultaneously offers Kosovo-compliant accounting, cloud operation, and AI-powered insight — Guri Finance fills that gap.</p>
+
+<p class="q"><b>Q14. What is the gap you identified in existing solutions?</b></p>
+<p class="a">A three-way integration gap. Global platforms (Xero, QuickBooks Online) have rich functionality and AI but don't localize to Kosovo's SKA or ATK reporting. Local Kosovo solutions (e.g. Finabit, Stom) guarantee narrow statutory compliance but lack a real general ledger, business intelligence and AI querying. No single product combines a compliant double-entry system, operational tooling, ATK reporting and Kosovo-grounded AI — that combination is Guri Finance's contribution.</p>
+
+<p class="q"><b>Q15. What five criteria did you evaluate competitors against?</b></p>
+<p class="a">Core Accounting Functionality, Daily Operational Capabilities, Reporting and Business Intelligence, Localization and Regulatory Compliance, and Artificial Intelligence Integration. These were chosen to expose the gap cleanly: global tools score high on the first three and AI but fail localization, while local tools pass only compliance.</p>
+
+<p class="q"><b>Q16. Why didn't you just localize Xero or QuickBooks, or build on Odoo/ERPNext?</b></p>
+<p class="a">Global vendors rarely localize for Kosovo because it's a tiny share of their market, and their localization model pushes configuration onto the user rather than baking compliance in. Odoo/ERPNext need heavy configuration and maintenance, offering little to my evaluation. Guri Finance instead makes Kosovo compliance the <i>primary design constraint</i> — SKA codes live in the domain model itself — which is a fundamentally different and stronger approach than configuration-on-top.</p>
+
+<p class="q"><b>Q17. Why is your differentiation a deliberate trade-off rather than feature parity?</b></p>
+<p class="a">Replicating Xero/QBO's full feature set as one developer is neither feasible nor relevant to the research question. So I chose a differentiation strategy: a statutory-compliant, cloud, AI-querying core, while deliberately excluding OCR bill scanning (too hard solo), multi-currency (Kosovo uses only the euro) and automated bank reconciliation (Kosovo banks lack open APIs). The architecture is extensible so these can be added later — and the evaluation confirmed multi-currency and report depth as the top adoption asks.</p>
+
+<p class="q"><b>Q18. The positioning table marks your Core Accounting as partial (◑). Why not full?</b></p>
+<p class="a">Honesty about scope. Guri Finance records transaction activity and produces invoices and a validating double-entry ledger, but it doesn't yet have the full breadth of a mature GL (e.g. some advanced reconciliation and reporting depth). I scored it partial rather than overclaim parity with Xero — the report is candid that this is an FYP-grade core, strong on compliance and AI, with documented gaps.</p>
+
+<p class="q"><b>Q19. What does "AI specificity" mean as a gap, and why can't a generic AI assistant close it?</b></p>
+<p class="a">RAG quality depends heavily on the specificity of the knowledge base. Xero's JAX and QuickBooks' agents reason over generic global finance knowledge and have no awareness of Kosovo's SKA conventions or ATK reporting rules, so they can't answer Kosovo-specific questions accurately. Guri Finance grounds the LLM in two Kosovo sources — the SKA and the tenant's own journal — so answers are both factually correct and legally aligned.</p>
+
+<hr>
+
+<h2>TIER 3 — Architecture &amp; Domain-Driven Design (very likely)</h2>
+
+<p class="q"><b>Q20. Give me the overall architecture in one minute.</b></p>
+<p class="a">Five independently deployed NestJS services, each with its own PostgreSQL database, behind an nginx reverse proxy that routes by URL prefix and serves the React SPA. Services communicate synchronously over HTTP for lookups/validation and asynchronously over Kafka for state-change events (<code>operations.events</code> to Ledger, <code>ledger.events</code> to AI). No service reads another's database — strict bounded-context isolation.</p>
+
+<p class="q"><b>Q21. What are your bounded contexts and what does each own?</b></p>
+<p class="a">IAM owns Tenant and User (identity, JWT, roles). Compliance owns the SKA/VAT taxonomy and validation. Operations owns Bills, Invoices and Inventory and orchestrates the storno saga. Ledger owns immutable JournalEntries, the trial balance and ATK reports. AI owns the per-tenant financial aggregate and the RAG vector store. Each is a separate deployable with its own data store.</p>
+
+<p class="q"><b>Q22. What is a bounded context and why does the same concept differ across them?</b></p>
+<p class="a">A bounded context is a boundary within which a domain model has one precise, unambiguous meaning. The same word can mean different things in different contexts: in IAM a "User" is credentials, roles and tokens, whereas in the Ledger that same party is just an Account Holder defined by ledger ID and limits. Isolating these meanings prevents tangled "God classes" and lets each microservice model its own language — the DDD ubiquitous language.</p>
+
+<p class="q"><b>Q23. What is the ubiquitous language and where is it visible in your system?</b></p>
+<p class="a">It's the shared, precise vocabulary used by domain experts and reflected directly in the code. In Guri Finance it shows in names like <code>FaturaHyrese</code> (the Albanian term for an incoming supplier bill), <code>Storno</code> (reversal), SKA account codes and VAT categories — the accounting domain's real terminology is the code's terminology, validated with a practising Kosovo accountant.</p>
+
+<p class="q"><b>Q24. Explain entities, value objects and aggregates with your own examples.</b></p>
+<p class="a">An entity has identity that persists through attribute changes — a Ledger Account keyed by Account ID even as its balance changes. A value object is immutable and defined by its attributes — a Money object of 100 EUR; change the amount and you create a new one. An aggregate is a cluster treated as a unit through a single root that guards invariants — a journal entry whose root enforces that debits equal credits, or my Bill aggregate whose root <code>FaturaHyrese</code> is the only way to change state.</p>
+
+<p class="q"><b>Q25. How does the Bill aggregate enforce its invariants?</b></p>
+<p class="a">Every state transition goes through the <code>FaturaHyrese</code> root only. The constructor rejects an empty lines array, a negative total or an unknown VAT type, so an invalid bill can't exist. <code>post()</code> refuses to move anything but a DRAFT and calls Compliance to verify all VAT categories before allowing DRAFT→POSTED, and the state machine forbids illegal transitions (e.g. reversing a DRAFT). Invariants live in the model, not in scattered service checks.</p>
+
+<p class="q"><b>Q26. Why embed SKA compliance in the domain model rather than as a validation step?</b></p>
+<p class="a">This was a key lesson in the report. Treating compliance as external validation leaves a defect class: someone can bypass the validator by calling the service directly. By making the SKA hierarchy and VAT categories a property of the aggregate — the bill literally cannot be POSTED with an invalid tax category because <code>post()</code> enforces CR-001 at the domain layer — compliance becomes an inherent characteristic of the data, not an optional gate. That's a structural advantage over configuration-based global platforms.</p>
+
+<p class="q"><b>Q27. What is a "distributed monolith" and how did DDD help you avoid it?</b></p>
+<p class="a">A distributed monolith is a system split into services along arbitrary or technical lines, so it keeps the tight coupling of a monolith while adding network overhead — the worst of both. DDD avoids it by drawing service boundaries along bounded contexts (business capabilities) rather than technical tiers, so each service is genuinely autonomous and communicates only through well-defined event/HTTP contracts.</p>
+
+<p class="q"><b>Q28. How is Conway's Law relevant to a one-person project?</b></p>
+<p class="a">Conway's Law says system design mirrors the communicating structure of the organization. Even solo, I deliberately organized the system around business domains rather than technical tiers (no "database team" vs "UI team" split), which is the microservices-aligned structure the literature recommends — so the boundaries reflect the domain, the way they would if separate teams owned each context.</p>
+
+<p class="q"><b>Q29. How does a request travel from the browser to a domain action?</b></p>
+<p class="a">The React SPA calls the nginx gateway; nginx routes by URL prefix to the owning service; the service's NestJS controller validates the DTO with class-validator, the JwtAuthGuard/RolesGuard/TenantGuard authorize it, and the application service invokes the domain aggregate, which enforces invariants and emits domain events through the transactional outbox.</p>
+
+<hr>
+
+<h2>TIER 4 — Distributed-systems patterns (very likely, high-value)</h2>
+
+<p class="q"><b>Q30. State the CAP theorem and say where your system sits.</b></p>
+<p class="a">Under a network partition a distributed system can guarantee only two of Consistency, Availability and Partition tolerance. Microservices generally favour AP with eventual consistency (BASE), whereas a traditional monolith gives immediate consistency (ACID). Guri Finance is mostly AP across services, but because financial balances must always be correct, I use the Saga pattern to manage distributed transactions and keep critical operations consistent rather than relying on naive eventual consistency.</p>
+
+<p class="q"><b>Q31. If eventual consistency is unwise for money, how do you keep the ledger correct?</b></p>
+<p class="a">Each service's own database is fully ACID, so a single posting is atomic and correct locally. Across services I don't leave correctness to chance: the transactional outbox guarantees the event is never lost, idempotent consumers guarantee it's applied exactly once, and the Saga coordinates the one genuinely multi-service workflow (storno) with compensating transactions. So balances converge reliably and self-heal, rather than drifting.</p>
+
+<p class="q"><b>Q32. Explain the transactional outbox and the failure it fixed.</b></p>
+<p class="a">Early on, a crash <i>between</i> the database write and the Kafka publish could change state without publishing the event — an inconsistency. The outbox fixes this by persisting the event into an outbox table inside the same database transaction as the business state change, so they commit atomically. A background dispatcher then polls every 1.5 seconds and publishes pending events to Kafka, retrying with exponential backoff up to 60 seconds. No state change can exist without its event eventually being delivered.</p>
+
+<p class="q"><b>Q33. What are idempotent consumers and why are they necessary with Kafka?</b></p>
+<p class="a">Kafka guarantees at-least-once delivery, so a consumer can legitimately see the same event twice. The Ledger keeps an idempotency table storing each processed event's ID and idempotency key; before posting it checks the table and rejects duplicates, so re-delivering a <code>billPosted</code> event never creates a second journal entry. That's how at-least-once delivery yields exactly-once <i>effect</i>.</p>
+
+<p class="q"><b>Q34. Explain the Saga pattern and why it suits storno.</b></p>
+<p class="a">A Saga models a distributed transaction as a sequence of local transactions linked by messages, with predefined compensating transactions to roll back if a step fails — because you can't do an ACID rollback across autonomous databases. Storno fits perfectly: double-entry ledgers are legally immutable, so a wrong entry must be reversed by a mathematically opposite entry. The bill goes POSTED→REVERSING, the Ledger posts a mirror STORNO entry and replies, and Operations finalizes to REVERTED — or compensates back to POSTED if the Ledger reports failure.</p>
+
+<p class="q"><b>Q35. Walk me through the full storno saga including the compensation path.</b></p>
+<p class="a">Operations transitions the bill to REVERSING and publishes <code>billRevertRequested</code>. The Ledger finds the original unreversed ORIGINAL entry, posts a STORNO entry that swaps each line's debit and credit, links the original via <code>reversedBy</code>, and publishes <code>stornoPosted</code>. Operations' saga consumer then confirms the reversal (REVERSING→REVERTED). If the Ledger can't find the original it publishes <code>stornoFailed</code>, and Operations compensates the bill back to POSTED — the system never gets stuck in an inconsistent state.</p>
+
+<p class="q"><b>Q36. You cite Event Sourcing in the theory — do you actually event-source every aggregate?</b></p>
+<p class="a">I apply event-sourcing principles where they earn their keep rather than dogmatically everywhere. The ledger is an append-only, immutable journal — corrections are new STORNO events, never edits — and the Kafka log plus the outbox give a durable, replayable event stream that lets me rebuild read models. So the system has the event-sourced guarantees that matter for audit and recovery; full per-aggregate event sourcing wasn't necessary to meet the correctness and immutability requirements.</p>
+
+<p class="q"><b>Q37. You mention CQRS and materialized views — where does that appear?</b></p>
+<p class="a">There's a clear read/write separation: writes go through aggregates and events, while reads are served from query-optimized projections. The Ledger maintains an in-memory representation of all journal entries (rebuilt from PostgreSQL at startup) so trial balance, per-bill workflow and reports are served without re-aggregating on every call — a read model in the CQRS spirit. The AI service similarly builds a separate per-tenant financial aggregate as its read model from ledger events.</p>
+
+<p class="q"><b>Q38. Why shard Kafka by tenant ID specifically?</b></p>
+<p class="a">Ordering is only guaranteed within a partition, and the operations that must stay ordered are all scoped to a single tenant (a tenant's <code>billPaid</code> must follow its <code>billPosted</code>). Keying by tenant ID routes all of a tenant's events to one partition, preserving their order, while different tenants spread across partitions for parallelism. It's the minimal key that satisfies the ordering invariant without serializing the whole system.</p>
+
+<p class="q"><b>Q39. What is polyglot persistence and where do you use it?</b></p>
+<p class="a">It means each service uses the storage best suited to its needs rather than one shared database. The Ledger and Operations use relational PostgreSQL for ACID transactional integrity; the AI service uses PostgreSQL with the pgvector extension to store embeddings for semantic search. Same database engine family, but the AI context adds vector capabilities the others don't need.</p>
+
+<p class="q"><b>Q40. Why is a shared database considered an anti-pattern, and how do you avoid it?</b></p>
+<p class="a">A shared database couples services at the schema level: a change to one service's tables can break another, deployments become synchronized, and you lose the autonomy that justifies microservices. I avoid it with four physically separate PostgreSQL instances; no service can JOIN across another's schema, so all cross-context interaction goes through explicit event or HTTP contracts.</p>
+
+<p class="q"><b>Q41. What's the difference between orchestration and choreography, and which did you use?</b></p>
+<p class="a">Orchestration uses a central coordinator that directs each step; choreography has each service react to events and emit its own with no central brain. The storno saga is choreographed — Operations and Ledger exchange events directly — which keeps them decoupled and suits a short two-step flow. For a longer, branchier workflow I'd consider an orchestrator for easier monitoring.</p>
+
+<p class="q"><b>Q42. ESB and SOA had a central bus — isn't Kafka a central bus too?</b></p>
+<p class="a">The SOA Enterprise Service Bus was a smart, central middleware that did routing and transformation, which made it a single point of failure and re-coupled services. Kafka is deliberately "dumb pipes, smart endpoints": it's a durable log that doesn't contain business logic or orchestration — the intelligence lives in the autonomous services. So it provides decoupled messaging without recreating the ESB's coupling and brittleness.</p>
+
+<hr>
+
+<h2>TIER 5 — Accounting domain, SKA, VAT &amp; compliance (very likely)</h2>
+
+<p class="q"><b>Q43. Explain double-entry accounting and how you guarantee it.</b></p>
+<p class="a">Every transaction debits one account and credits another by equal amounts, keeping Assets = Liabilities + Equity in balance. The Ledger posts each domain event using fixed SKA posting templates that produce balanced pairs, journal entries are ORIGINAL and immutable once posted, and the integration tests assert the trial-balance invariant that total debits equal total credits after postings. It's a system-wide invariant, not a convention.</p>
+
+<p class="q"><b>Q44. Walk me through your SKA posting templates.</b></p>
+<p class="a">From Table 5.2: <code>billPosted</code> debits 665-09 (operating expenses) and credits 220 (accounts payable); <code>billPaid</code> debits 220 and credits 100 (cash/bank); <code>invoiceCreated</code> debits 140 (receivable) and credits 700 (sales revenue); <code>invoicePaid</code> debits 100 and credits 140; inventory RECEIPT debits 125 (inventory) and credits 220; inventory ISSUE debits 500 (COGS) and credits 125; and Storno swaps the original debit and credit accounts to mirror and cancel the entry.</p>
+
+<p class="q"><b>Q45. Your posting templates don't post VAT to a VAT control account — how is VAT handled?</b></p>
+<p class="a">Fair observation. VAT is enforced at the point of entry: each BillLine carries a VAT category, and Compliance rejects any bill whose VAT category isn't in the Kosovo taxonomy before it can be posted (CR-001). The ledger templates currently recognize the transaction amounts; a full VAT control-account posting (input/output VAT to account 250 for a filing-ready VAT return) is the natural next extension of the templates. So VAT is validated and captured at source, with VAT-account posting as the documented growth path.</p>
+
+<p class="q"><b>Q46. What is the SKA and how is it encoded in your system?</b></p>
+<p class="a">The Standard Chart of Accounts is Kosovo's legally mandated hierarchical account numbering, where the leading digit identifies the class — Class 1 Assets, Class 2 Liabilities, Class 7 Revenues, and so on. The Compliance service holds the full taxonomy (15 VAT types and 60 accounts per Law 06/L-032) and distributes it; the Ledger applies SKA codes via its posting templates, and the codes are part of the domain model so every transaction is correctly classified before it reaches the Ledger.</p>
+
+<p class="q"><b>Q47. What does Law No. 06/L-032 require, and how do you comply?</b></p>
+<p class="a">It obliges every Kosovo enterprise to keep accounts under IFRS or NAS (by size/status), use the SKA, and submit ATK-format financial statements (Balance Sheet, Income Statement) with proper audit trails. Guri Finance complies by enforcing SKA codes and VAT categories at the domain layer, posting immutable double-entry journals, and producing quarterly P&amp;L and Balance Sheet reports in ATK-compatible format for download.</p>
+
+<p class="q"><b>Q48. Why must journal entries be immutable, and how does storno respect that?</b></p>
+<p class="a">Legally, a posted ledger entry can't be altered or deleted — that would destroy the audit trail. So errors are corrected by posting an inverse (Storno) entry that mathematically cancels the original while both remain visible. My JournalEntry starts ORIGINAL and immutable; the only mutation is linking it to its reversing entry. This is exactly why Event Sourcing and Saga were needed technically.</p>
+
+<p class="q"><b>Q49. How does the Compliance service work, and why is it in-memory with no database?</b></p>
+<p class="a">It holds the taxonomy (15 VAT types, 60 accounts) in memory and serves it as a distributable bundle that every service loads at startup, plus a validation endpoint Operations calls before posting. It needs no database because the taxonomy is reference data derived from law, not transactional state. An admin endpoint can atomically replace the in-memory bundle with no restart, so a tax-law change can be rolled out live.</p>
+
+<p class="q"><b>Q50. If the taxonomy is in memory, how do other services stay in sync after an update?</b></p>
+<p class="a">Services load the bundle at startup, and the admin endpoint atomically swaps the in-memory package on the Compliance side. To propagate a live update I'd have services re-pull the bundle (they already poll/cache it), and an even cleaner design is a "taxonomy changed" event so consumers refresh immediately — but for a taxonomy that changes rarely, the bundle-on-startup plus admin-refresh model is sufficient and simple.</p>
+
+<p class="q"><b>Q51. Why is bill validation done twice — at the domain layer and via Compliance?</b></p>
+<p class="a">Defence in depth with a single source of truth. Compliance owns the authoritative taxonomy and validates the full payload; the domain layer (via <code>post()</code> calling Compliance) makes it impossible to post a bill with an invalid VAT category regardless of entry path, enforcing CR-001 at the aggregate. So the rule can't be bypassed by skipping a controller — the model itself refuses.</p>
+
+<p class="q"><b>Q52. What ATK reports do you generate and how?</b></p>
+<p class="a">Quarterly Profit &amp; Loss and Balance Sheet in Kosovo's required format, downloadable as CSV. The Ledger computes them from journal entries: classifying by SKA class prefix for the P&amp;L (revenue, COGS, operating expenses) and netting balances by class for the Balance Sheet, with TAK/ATK headers in Albanian. The report notes future work to add an interactive viewer and prior-period comparative columns.</p>
+
+<p class="q"><b>Q53. What is a trial balance and why expose it?</b></p>
+<p class="a">A trial balance lists every account's total debits and credits and is the classic check that the books balance — total debits must equal total credits. Exposing it lets accountants verify integrity at a glance and is a core expectation of the profession; in the evaluation it scored 4.36/5 for usefulness, and the integration tests assert the debit=credit invariant on it.</p>
+
+<p class="q"><b>Q54. How does inventory valuation work and how does it reach the ledger?</b></p>
+<p class="a">Inventory uses weighted-average cost: a RECEIPT recomputes the average unit cost and increases quantity; an ISSUE values stock out at the current average and decreases quantity, refusing to oversell. Each movement emits an event the Ledger posts — RECEIPT debits inventory (125)/credits payable (220), ISSUE debits COGS (500)/credits inventory (125) — so stock value and cost of goods sold flow automatically into the books.</p>
+
+<p class="q"><b>Q55. What is the EDI inbox and how does cross-tenant billing work?</b></p>
+<p class="a">EDI lets one tenant send a bill directly to another tenant on the platform. The sender supplies the counterparty's NUI; Operations asks IAM to resolve that NUI to a tenant ID via an authenticated internal lookup, and a document is placed in the receiver's EDI inbox for them to import as a bill. Neither side reads the other's database — the document crosses the boundary as a snapshot, preserving isolation.</p>
+
+<hr>
+
+<h2>TIER 6 — AI, RAG &amp; Gemini (very likely — your headline feature)</h2>
+
+<p class="q"><b>Q56. Explain your RAG pipeline end to end.</b></p>
+<p class="a">On ingestion, each journal entry's text is embedded with Gemini <code>text-embedding-004</code> (768 dims) and stored in pgvector, and a seeder pre-embeds the SKA and compliance rules as shared context. On a question: embed the query, run a cosine-similarity search for the top-8 chunks, inject those plus the tenant's financial snapshot into the prompt, and ask Gemini to answer from that context at low temperature. The result is grounded in Kosovo-specific, tenant-specific facts.</p>
+
+<p class="q"><b>Q57. Why RAG rather than fine-tuning or just prompting the model?</b></p>
+<p class="a">RAG grounds the model in a factual, verified knowledge base that's separate from its weights, which directly addresses hallucination and gives real-time access to the tenant's current ledger — neither of which raw prompting or fine-tuning provides. Fine-tuning would also bake data into the model (a privacy and freshness problem) and can't reflect a journal entry posted seconds ago. RAG keeps the LLM as a reasoning layer over trusted data.</p>
+
+<p class="q"><b>Q58. What is the role boundary of the AI — what can it and can't it do?</b></p>
+<p class="a">The AI only summarizes, categorizes and explains. Every calculation, posting and report is done by the deterministic part of the system. This is a deliberate safety boundary: the LLM never computes balances or writes to the ledger, so even if it phrased something wrongly it cannot corrupt the books — it's an interpretation layer, not an authority.</p>
+
+<p class="q"><b>Q59. LLMs hallucinate — how do you mitigate that for financial accuracy?</b></p>
+<p class="a">Four controls. Grounding: the answer must come from retrieved, verified chunks plus the real financial snapshot. Low temperature: the model is kept near-deterministic to avoid invention. Scope limitation: it only explains/summarizes, never calculates. And degraded mode: if Gemini is unavailable it returns the plaintext financial snapshot rather than guessing. The deterministic core remains the source of truth, so the AI can mislead phrasing but not the figures.</p>
+
+<p class="q"><b>Q60. What is a transformer and why does it underpin this?</b></p>
+<p class="a">The transformer is the architecture behind modern LLMs; unlike sequential RNNs it uses self-attention to weigh the importance of every word in a sentence simultaneously, regardless of distance. Trained on large corpora it learns syntax, semantics and some reasoning, enabling query parsing, summarization and generation — the capabilities my AI analyst uses to interpret natural-language financial questions.</p>
+
+<p class="q"><b>Q61. What is the determinism problem with LLMs in finance?</b></p>
+<p class="a">An LLM predicts the next token probabilistically, so it can produce confident but false output — a hallucination — which is unacceptable where accuracy is required. Beyond hallucination there are prompt injection, data-leak and access-control risks. So an LLM must be wrapped in strict controls and grounded by an external deterministic system, which is exactly what RAG plus the deterministic ledger provide here.</p>
+
+<p class="q"><b>Q62. How is the embedding model and dimensionality chosen, and why 768?</b></p>
+<p class="a">I use Gemini's <code>text-embedding-004</code>, which outputs 768-dimensional vectors — a standard, well-balanced size for semantic search (enough expressiveness without excessive index cost). The RagChunk entity stores these 768-dim vectors in pgvector for both journal entries and compliance documents, and the same model embeds the query so they live in the same space for cosine comparison.</p>
+
+<p class="q"><b>Q63. Why cosine similarity and top-8 chunks?</b></p>
+<p class="a">Cosine similarity compares the direction (meaning) of vectors irrespective of magnitude, which is the right measure for semantic relevance between a question and stored text. Top-8 balances giving the model enough grounding context against keeping the prompt focused and within token/cost limits. It's enough chunks to cover the relevant SKA rules plus recent entries without diluting the prompt.</p>
+
+<p class="q"><b>Q64. What does the seeder do and why seed shared context?</b></p>
+<p class="a">At startup the seeder embeds the Kosovo SKA and compliance rules as shared (tenant-agnostic) chunks. This means the AI can answer questions about account codes and legal rules even for a brand-new tenant with no journal entries yet — the regulatory knowledge is always available, and a tenant's own entries augment it as they post.</p>
+
+<p class="q"><b>Q65. What is degraded mode and why is it a requirement?</b></p>
+<p class="a">If the Gemini API key is missing or the model errors, the AI service returns the plaintext financial snapshot instead of failing — so some business intelligence is always available. It's listed as functional requirement FR-13 because a financial tool shouldn't go dark just because an external dependency hiccups, and it cleanly separates the always-available deterministic data from the best-effort generative layer.</p>
+
+<p class="q"><b>Q66. How do you stop the AI leaking one tenant's data into another's answer?</b></p>
+<p class="a">Retrieval is tenant-scoped: the vector search only returns the shared compliance corpus plus the querying tenant's own chunks, and the financial snapshot injected is that tenant's. Combined with the platform's JWT-based tenant isolation (the TenantGuard ensures the request's tenant matches the token), a tenant's RAG context can only ever contain shared knowledge and their own data.</p>
+
+<p class="q"><b>Q67. What about prompt injection — a user trying to override your instructions?</b></p>
+<p class="a">It's a recognized LLM risk I call out in the theory. Mitigations in play: the model is constrained to answer only from provided context, temperature is minimal, the AI can't perform actions (only explain), and no secret is ever placed in the prompt, so there's nothing sensitive to exfiltrate. Hardening like stricter input delimiting/sanitization is a natural next step, and self-hosting the model (future work) removes the external-exposure dimension entirely.</p>
+
+<p class="q"><b>Q68. Your future work replaces Gemini with a self-hosted LLM — why and what changes?</b></p>
+<p class="a">To keep all financial data inside the tenant's own Kubernetes infrastructure and remove external-API exposure and dependency. A self-hosted generative model (and self-hosted embeddings) would mean questions and journal context never leave the cluster — important for financial confidentiality and one accountant's stated caution about trusting external AI with their data. The RAG architecture stays identical; only the model endpoint changes, which is why the design is deliberately swappable.</p>
+
+<hr>
+
+<h2>TIER 7 — Security, authentication &amp; multi-tenancy (likely)</h2>
+
+<p class="q"><b>Q69. How does authentication work?</b></p>
+<p class="a">IAM issues a signed JWT on login carrying id, email, tenantId, role and a mustChangePassword flag — everything needed to authorize a request without a database hit, keeping the services stateless. Every request to any service carries the Bearer token, which the JwtAuthGuard validates; RolesGuard enforces the role hierarchy and TenantGuard enforces tenant scope.</p>
+
+<p class="q"><b>Q70. How are passwords stored?</b></p>
+<p class="a">Hashed with bcrypt before being saved (NFR-03), and the hashing happens in the domain layer alongside email normalization so the security logic sits with the data it protects, not in controllers. bcrypt is a deliberately slow, salted, one-way hash, so a database leak doesn't expose usable passwords and offline brute-forcing is impractical.</p>
+
+<p class="q"><b>Q71. Why hash in the domain layer rather than the controller or a service?</b></p>
+<p class="a">DDD discipline: business-critical logic — NUI validation, email normalization, password hashing — belongs close to the data it governs, inside the entity, so it can't be skipped by an alternate code path. Putting it in the controller would let a different caller bypass it; in the domain it's an invariant of constructing a valid User/Tenant.</p>
+
+<p class="q"><b>Q72. How is tenant isolation enforced and guaranteed?</b></p>
+<p class="a">Every record is scoped by tenantId, the JWT carries the caller's tenantId, and the TenantGuard rejects any request where the token's tenantId doesn't match the tenant being acted on — the cross-tenant rejection is unit-tested (NFR-02). So a user can only ever touch their own tenant's data; cross-tenant leakage is explicitly tested against.</p>
+
+<p class="q"><b>Q73. What is the NUI and how is it validated?</b></p>
+<p class="a">The NUI is Kosovo's 9-digit unique business identifier, which must start with 8. It's validated in the Tenant entity constructor itself, so an invalid NUI can never reach the database through any path — validation is an invariant of constructing a Tenant, not a controller check. It also keys the cross-tenant EDI lookup.</p>
+
+<p class="q"><b>Q74. Why is the JWT 8 hours, and what about expiry/revocation?</b></p>
+<p class="a">Eight hours (NFR-02) is a usability/security balance for a workday session — long enough to avoid constant re-login, short enough to bound exposure. The tokens are stateless and self-expiring; for finer-grained revocation a refresh-token scheme with short access tokens is the standard hardening, which I'd add for production alongside the broader security review the report flags as a pre-commercial requirement.</p>
+
+<p class="q"><b>Q75. How do services authenticate to each other?</b></p>
+<p class="a">Inter-service calls — such as Operations resolving a counterparty NUI from IAM — use dedicated shared secrets, not user JWTs. That keeps the service-to-service trust boundary separate from end-user authentication, so an internal lookup isn't gated on a user token and a leaked user token can't directly invoke internal endpoints.</p>
+
+<p class="q"><b>Q76. How does role-based access control work, and what are the roles?</b></p>
+<p class="a">Four roles: Administrator (full access incl. admin panel), Accountant (all modules except admin panel), Data Clerk (Daily Operations only), Auditor (read-only across Ledger, Compliance and AI). RolesGuard enforces this server-side per route, and the frontend's Protected routes mirror it for UX. The permission matrix is Table 5.1, and RolesGuard's rejection of an unrecognized role is unit-tested.</p>
+
+<p class="q"><b>Q77. How does the frontend enforce authorization, and isn't client-side control bypassable?</b></p>
+<p class="a">The Protected route component checks authentication and role before rendering, redirecting anonymous users to login and unauthorized users to their role's home — so restricted routes never render regardless of any forbidden HTTP response. But this is UX defence only; the real enforcement is the server-side guards. Client checks improve experience; the JwtAuthGuard/RolesGuard/TenantGuard are what actually protect data.</p>
+
+<hr>
+
+<h2>TIER 8 — Requirements &amp; non-functional targets (likely)</h2>
+
+<p class="q"><b>Q78. How did you structure your requirements?</b></p>
+<p class="a">Thirteen functional requirements organized by bounded context (IAM, Compliance, Operations, Ledger, AI) and ten non-functional requirements each with a measurable acceptance criterion — performance, security, scalability, reliability, compliance, availability, usability. Every requirement is mapped to evidence in the Requirements Traceability Matrix (Table 7.2).</p>
+
+<p class="q"><b>Q79. What's your performance target and did you meet it?</b></p>
+<p class="a">NFR-01: p95 API response under 200 ms at normal load. The k6 load tests against the Kubernetes deployment recorded p95 latencies of 32.45 ms (create bill), 59.16 ms (post bill), 6.55 ms (trial balance) and 7.14 ms (journal entries) — all comfortably within 200 ms, so the target is met with significant headroom.</p>
+
+<p class="q"><b>Q80. Which requirement is only partially satisfied, and why?</b></p>
+<p class="a">NFR-09, the 99.9% monthly uptime target. The architecture to support it is in place — Kubernetes deployments, HPAs and PDBs were tested — but uptime hasn't been measured over a sustained production period, so I honestly marked it partially satisfied (◑) rather than claim a figure I can't yet evidence. All thirteen functional requirements are fully met.</p>
+
+<p class="q"><b>Q81. What are your reliability NFRs and how are they evidenced?</b></p>
+<p class="a">Guaranteed event delivery (outbox dispatcher retries to a 60 s max backoff) and idempotent processing (identical events never create duplicate postings). Both are evidenced by the outbox polling confirmation and the idempotency-table unit tests, and the saga integration ties them into the storno flow. They directly encode the "money must not be lost or double-counted" requirement.</p>
+
+<p class="q"><b>Q82. What does "stateless service design" buy you?</b></p>
+<p class="a">Any instance can serve any request because no session state lives in the service — the JWT carries identity, and state lives in the databases. That's what makes horizontal scaling via Kubernetes HPAs valid: you can add replicas freely and the load balancer can route to any of them.</p>
+
+<p class="q"><b>Q83. Why is bilingual support a non-functional requirement, not a nice-to-have?</b></p>
+<p class="a">The audience is Kosovar, so all UI labels and even server-side taxonomy must be available in English and Albanian (NFR-10). The frontend stores the chosen language and sends an <code>x-lang</code> header on every request, so the Compliance API returns tax-category names and rule descriptions in the selected language — localization reaches the data, not just the labels.</p>
+
+<hr>
+
+<h2>TIER 9 — Methodology &amp; process (moderately likely)</h2>
+
+<p class="q"><b>Q84. Why iterative development rather than incremental?</b></p>
+<p class="a">Because the bounded contexts are interdependent end-to-end: a bill must pass Compliance, post to the Ledger, then become queryable by AI through the event pipeline. An incremental model that finished one service before starting the next would leave the true end-to-end flow untested until very late. So I built all five services from Iteration 1 and deepened them each iteration, always ending with a deployable, integrated system.</p>
+
+<p class="q"><b>Q85. Why test against the deployed system instead of mocked services?</b></p>
+<p class="a">Integration tests ran against the actually deployed services, not mocks, so a regression in one microservice would surface its impact on every integrated microservice — catching cross-service contract breaks that mocking would hide. For an event-driven system where the risk lives in the seams between services, testing the real seams is far more valuable.</p>
+
+<p class="q"><b>Q86. Summarize your five iterations.</b></p>
+<p class="a">(1) Basic deployment and end-to-end bill→journal flow. (2) Domain rules and validation — consistent rules, double-entry balance, Compliance enforced by Operations. (3) Operational completeness — invoicing and inventory, replacing HTTP forwarding with the Kafka pipeline, the storno saga and transactional outbox. (4) Intelligence layer and EDI — the Kosovo-grounded AI analyst and the cross-tenant EDI inbox. (5) Frontend, deployment and refinement — the final React frontend, Kubernetes manifests (HPA, PDB, Ingress) and clearing integration-test failures.</p>
+
+<p class="q"><b>Q87. How does this methodology relate to agile/Scrum?</b></p>
+<p class="a">It follows the empirical process control idea from Scrum — each iteration delivers a potentially releasable increment — and aligns with agile literature's emphasis on short feedback loops. For a project where financial-correctness requirements collide with distributed event-driven constraints, legal compliance and AI, iterative delivery with continuous integration gives the best feedback and reduces the risk of late-stage architectural surprises.</p>
+
+<hr>
+
+<h2>TIER 10 — Testing &amp; evaluation (likely — examiners probe numbers)</h2>
+
+<p class="q"><b>Q88. What is your test coverage and how is it measured?</b></p>
+<p class="a">Jest reports 93.06% lines, 92.46% statements, 87.83% functions and 74.11% branches, plus 76.41% condition coverage from a custom coverage gate. I deliberately excluded declarative/low-logic files — main.ts, DTOs, repositories, the domain-event bus and controllers — focusing the metric on domain and application logic where correctness lives.</p>
+
+<p class="q"><b>Q89. Why is branch coverage (74%) lower than line coverage (93%)?</b></p>
+<p class="a">Branch and condition coverage are stricter — they require exercising each decision outcome and each boolean operand, not just executing each line. 74% branches and 76% conditions reflect honestly that some defensive/error branches aren't all hit by unit tests; many of those paths (e.g. service-down fallbacks) are exercised in the integration suite instead. High line coverage with somewhat lower branch coverage is a normal, candid profile.</p>
+
+<p class="q"><b>Q90. What's your overall testing strategy?</b></p>
+<p class="a">A layered strategy: unit tests for domain models and services (no mocks, real flows), integration tests for HTTP endpoints via Supertest against the running app, property-based tests for mathematical invariants with fast-check, and k6 for load testing against the Kubernetes deployment. Each layer targets a different failure class.</p>
+
+<p class="q"><b>Q91. What exactly do your unit tests cover?</b></p>
+<p class="a">The FaturaHyrese state machine (e.g. calling <code>post()</code> on an already-POSTED bill, or <code>reverse()</code> on a DRAFT, throws before any side effect), constructor validation (negative total, empty lines, unknown VAT type all fail), BillService/InvoiceService total calculation and event firing, and the guards — JwtAuthGuard (401 on missing token, pass on valid, @Public bypass), RolesGuard (unrecognized role rejected) and TenantGuard (cross-tenant mismatch rejected).</p>
+
+<p class="q"><b>Q92. What do your integration tests check that units don't?</b></p>
+<p class="a">Real HTTP behaviour: the health check, Compliance endpoints in all languages, and Ledger trial-balance and journal endpoints — plus edge cases like a storno against a non-existent reference returning a <code>stornoFailed</code> event, and the assertion that after postings the trial balance satisfies total debits = total credits. They validate the wiring and contracts, not just isolated logic.</p>
+
+<p class="q"><b>Q93. Explain property-based testing and what invariant you test.</b></p>
+<p class="a">Instead of fixed examples, fast-check generates many random inputs and checks a property holds. I assert that BillLine's <code>netAmount</code> equals quantity × unitPrice across the full float range — running 50 cases each time, including near-zero, very large and very small decimals. It's targeted at floating-point arithmetic errors, where a single undetected rounding bug in money math would surface across the generated cases.</p>
+
+<p class="q"><b>Q94. How did you load test, and what does p95 mean?</b></p>
+<p class="a">k6 against the Kubernetes-deployed system, staged at increasing load with all checks passing. p95 is the 95th-percentile latency — 95% of requests are faster than that value — a more honest measure of user-perceived performance than the mean because it captures the slow tail. All four key operations' p95s were well under the 200 ms NFR.</p>
+
+<p class="q"><b>Q95. How did you evaluate the system with users?</b></p>
+<p class="a">A structured questionnaire-plus-task session with 11 participants — 6 accountants/bookkeepers, 2 business owners, an economics student, a finance manager and a loan officer, 9 of whom regularly use accounting software. Each ran a real workflow (post a bill with VAT/SKA, manage an invoice, review the ledger and trial balance, export an ATK report, initiate a storno) then rated the system 1–5 across several dimensions.</p>
+
+<p class="q"><b>Q96. What were the headline evaluation results?</b></p>
+<p class="a">An overall experience mean of 4.64/5, with every dimension except one above 4.3 and none below 3. The bill-posting task scored highest (4.91/5) with no failures, journal-entry clarity 4.73 (all experts gave 5), and the AI analyst was rated the single most valuable feature by 9 of 11 participants.</p>
+
+<p class="q"><b>Q97. Likelihood-to-use was only 2.55/5 and recommendation 2.82/5 — doesn't that undermine the project?</b></p>
+<p class="a">No — those scores reflect rational professional caution toward new, unproven financial software, not dissatisfaction with the product, which scored 4.64 overall. Accountants are conservative about trusting their books to untested tools without a production track record. That's exactly why the report's recommended next step is a supervised pilot with real Kosovo SMEs to build the operational track record that earns adoption.</p>
+
+<p class="q"><b>Q98. What adoption gaps did the evaluation surface?</b></p>
+<p class="a">Three: deeper reporting (raised by 8 of 11), multi-currency support (6 of 11, critical for a tourism-firm owner), and a mobile app (5 of 11). All three were deliberate Chapter 3 exclusions, and all three are in future work — multi-currency via a Money value object and exchange-rate service, reporting via comparative columns and an interactive viewer, and a read-only React Native companion.</p>
+
+<p class="q"><b>Q99. The only task that caused difficulty was storno — what happened and what did you conclude?</b></p>
+<p class="a">Four participants didn't attempt it and two found it confusing — not because it was broken, but because the UI gave no affordance that a bill was reversible (you had to know to copy the bill ID into a storno box), and two didn't recognize the word "storno". The lesson: domain-correctness and discoverability are different. The fix is a contextual "Reverse" button per bill row and relabelling the user-facing action "reversal" while keeping "storno" in compliance docs.</p>
+
+<p class="q"><b>Q100. Is 11 participants a statistically valid sample?</b></p>
+<p class="a">It's a qualitative usability evaluation, not a statistical study, so the goal is rich expert feedback rather than statistical significance — and Nielsen's usability research shows small expert panels surface most issues. The sample is deliberately weighted toward domain experts (6 accountants plus finance professionals) who are the real target users, which makes their judgement on compliance and clarity more valuable than a larger lay sample.</p>
+
+<p class="q"><b>Q101. Why measure condition coverage with a custom gate on top of Jest?</b></p>
+<p class="a">Jest/Istanbul thresholds cover statements, branches, functions and lines but not condition coverage of individual boolean operands. I added a custom gate computing condition (and decision/condition) coverage from Istanbul's branch map, giving a stricter, MC/DC-flavoured view of logical testing — appropriate rigour for code that decides whether financial transactions are valid.</p>
+
+<hr>
+
+<h2>TIER 11 — Frontend &amp; deployment (moderately likely)</h2>
+
+<p class="q"><b>Q102. Describe the frontend and how it talks to the backend.</b></p>
+<p class="a">A React/Vite/TypeScript single-page app, routed by React Router with a Protected route component for auth/role gating, talking only to the nginx gateway. An Axios request interceptor automatically attaches the Bearer token, tenant ID and language code to every call, so individual pages don't re-implement auth headers.</p>
+
+<p class="q"><b>Q103. How does the bilingual UI work technically?</b></p>
+<p class="a">A header language switch toggles English/Albanian and stores the choice in localStorage. Every API request carries an <code>x-lang</code> header, so the Compliance service returns tax-category names and rule descriptions in the chosen language — meaning localization is consistent across both the UI labels and the server-side taxonomy, satisfying NFR-10.</p>
+
+<p class="q"><b>Q104. How is the system deployed and started reliably?</b></p>
+<p class="a">Docker Compose enforces start order — four databases first, then Zookeeper and Kafka, then the application services — to avoid connection-failure startups. In Kubernetes, stateless services run as Deployments with rolling updates, while databases and Kafka run as StatefulSets with persistent volumes so their state survives pod restarts.</p>
+
+<p class="q"><b>Q105. What do HPA and PDB give you, and why both?</b></p>
+<p class="a">The Horizontal Pod Autoscaler scales each service independently with load, so a busy Operations service can add replicas without touching the others. The Pod Disruption Budget guarantees at least one pod per service stays available during voluntary disruptions like node maintenance. One handles demand, the other handles availability during planned disruption — together they support the uptime goal.</p>
+
+<p class="q"><b>Q106. How are secrets handled in deployment?</b></p>
+<p class="a">Kubernetes Secrets store the sensitive material — database credentials, the JWT signing key and the Gemini API key — separately from the application images and config, so they're injected at runtime rather than baked into code. For production the report flags a full security review, which would include a managed secret store with rotation.</p>
+
+<p class="q"><b>Q107. Why nginx as the single entry point?</b></p>
+<p class="a">It's a lightweight, proven reverse proxy that routes <code>/api</code> traffic to the right service by URL prefix and serves the React SPA as static files from the same origin, avoiding CORS complexity and giving one clean ingress. It re-resolves service DNS dynamically so it keeps routing correctly as pods restart.</p>
+
+<hr>
+
+<h2>TIER 12 — Limitations, technical debt &amp; future work (common closers)</h2>
+
+<p class="q"><b>Q108. Is Guri Finance production-ready? Be honest.</b></p>
+<p class="a">No, and the report says so explicitly: it meets FYP standards but isn't ready for unsupervised commercial use. It needs sustained uptime monitoring, an independent security audit, multi-currency support, and testing with real SMEs. The recommended path is a supervised pilot with a few Kosovo SMEs — the system has sufficient controls for that — to build the track record and surface real priorities.</p>
+
+<p class="q"><b>Q109. You list nine items of technical debt — walk me through them.</b></p>
+<p class="a">TD-01 storno usability (no per-row reverse button), TD-02 storno terminology (rename to "reversal"), TD-03 performance load-tested only locally, TD-04 no sustained uptime monitoring, TD-05 multi-currency absent, TD-06 reporting depth, TD-07 no mobile interface, TD-08 AI trust (users want external proof), TD-09 onboarding documentation. They came from task testing, the questionnaire and the traceability analysis — documented deliberately, each with a recommended resolution.</p>
+
+<p class="q"><b>Q110. Why exclude multi-currency when six users wanted it?</b></p>
+<p class="a">It was a scoped exclusion in Chapter 3 because Kosovo's official currency is the euro, so single-currency covers the core domestic case for an FYP. The evaluation showed international-facing businesses (e.g. tourism) genuinely need it, so it's the top future-work item: a Money value object, an exchange-rate ingest service, and updated posting templates to handle cross-currency transactions under SKA principles.</p>
+
+<p class="q"><b>Q111. How would you add multi-currency without breaking double-entry?</b></p>
+<p class="a">Introduce a Money value object pairing amount with currency, add an exchange-rate service supplying dated rates, and store on each entry both the transaction-currency amount and a base-currency (EUR) amount with the rate used. Postings happen in base currency to keep the ledger balanced, while the original currency is retained for reporting — the posting templates extend to record any FX gain/loss.</p>
+
+<p class="q"><b>Q112. The deepest future-work item is a self-hosted LLM — why is that significant?</b></p>
+<p class="a">It removes the last external dependency that touches financial data. Today questions and journal context go to Gemini; a self-hosted generative and embedding model in the same Kubernetes cluster means financial information never leaves the tenant's infrastructure, addressing confidentiality and the professional caution one accountant voiced about trusting external AI. Because RAG keeps the model swappable, only the endpoint changes.</p>
+
+<p class="q"><b>Q113. How would you address the storno usability problem concretely?</b></p>
+<p class="a">Add a contextual "Reverse" button and confirmation modal on every posted-bill row, so users never have to know to copy a bill ID into a separate box, and relabel the user-facing action "reversal" while keeping "storno" in compliance documents and code where the term is legally precise. It's the lowest-effort, highest-impact usability fix the study identified.</p>
+
+<p class="q"><b>Q114. What would a production reporting module look like?</b></p>
+<p class="a">First, comparative prior-period columns on the Balance Sheet and an interactive report viewer replacing downloadable CSVs; then a flexible reporting module supporting custom periods and account selection, plus aged-receivables reporting. Eight of eleven evaluators flagged report depth as a professional-use prerequisite, so it's a prioritized enhancement.</p>
+
+<hr>
+
+<h2>TIER 13 — Critical challenge questions on report claims (likely from a sharp examiner)</h2>
+
+<p class="q"><b>Q115. You claim Event Sourcing in theory but your aggregates store current state — defend that.</b></p>
+<p class="a">I positioned Event Sourcing as the justification for immutability and reversal, and I apply its principles where they're load-bearing: the ledger is append-only and immutable, the Kafka log is a durable replayable event stream, and the outbox guarantees events are captured atomically with state. So I have event-sourced guarantees for audit and recovery without paying the full cost of rebuilding every aggregate from an event log — a pragmatic, defensible application rather than a doctrinaire one.</p>
+
+<p class="q"><b>Q116. You said BillLines carry VAT, yet the ledger posts net amounts — isn't VAT missing from the books?</b></p>
+<p class="a">VAT is captured and validated at entry (each line's VAT category is checked against the Kosovo taxonomy before posting), so it's present in the operational records. The current ledger templates recognize the transaction value; posting VAT to a dedicated control account (250) to produce a filing-ready VAT return is the documented extension of the posting templates. So VAT compliance is enforced at source, with VAT-account posting as the clearly-scoped next step.</p>
+
+<p class="q"><b>Q117. Your trial balance/reports run off an in-memory projection — what happens when it outgrows memory or you scale to multiple instances?</b></p>
+<p class="a">PostgreSQL is always the source of truth and the in-memory model is a rebuilt-on-startup read cache for fast reporting. At larger scale or with multiple ledger instances I'd move reporting to SQL aggregation or materialized views (the CQRS read-model path the theory describes), so reads remain correct and complete regardless of instance count. It's an optimization with a clear evolution, not a structural limit.</p>
+
+<p class="q"><b>Q118. The report claims 99.9% uptime as an NFR but admits it's unproven — isn't claiming it misleading?</b></p>
+<p class="a">That's exactly why I marked it partially satisfied rather than satisfied. The architecture that <i>enables</i> 99.9% — HPAs, PDBs, rolling updates, StatefulSets — is implemented and tested, but I refuse to claim a measured uptime figure without sustained production monitoring, which is logged as technical debt TD-04. The honesty of the ◑ rating is the point.</p>
+
+<p class="q"><b>Q119. You load-tested with k6 but TD-03 says performance wasn't properly load-tested — which is it?</b></p>
+<p class="a">Both, precisely scoped. I ran staged k6 tests and recorded p95s well under 200 ms, which validates the latency NFR under the tested load. TD-03 acknowledges I didn't run sustained, production-scale load over time on Kubernetes, so I'm not over-claiming production performance characteristics. The capability is demonstrated; long-duration production load testing remains future work.</p>
+
+<p class="q"><b>Q120. Your coverage excludes controllers, DTOs and repositories — aren't you hiding untested code?</b></p>
+<p class="a">No — those layers are thin and largely declarative (DTOs are validation decorators; controllers mostly delegate; repositories are persistence plumbing), so unit-coverage there is low-signal. I concentrated the metric on domain and application logic where bugs are costly, and I exercise the controller/repository paths through the Supertest integration suite instead, so they are tested, just not via the unit-coverage number.</p>
+
+<p class="q"><b>Q121. You claim no commercial product meets these needs — how rigorous was that search?</b></p>
+<p class="a">It was a structured review against five explicit criteria, covering the two dominant global SME platforms (Xero, QuickBooks Online) and the locally-used Kosovo products (Finabit, Stom), informed by a practising Kosovo accountant who knows the local market. I excluded heavyweight configurable ERPs (Odoo, ERPNext) with justification. It's a scoped, criteria-driven gap analysis, not an exhaustive global market census, and I'm explicit about that boundary.</p>
+
+<p class="q"><b>Q122. How do you know your AI answers are factually correct, beyond user opinion?</b></p>
+<p class="a">Structurally, the AI only explains over verified, retrieved data and never computes — the authoritative figures come from the deterministic ledger, which is itself tested for double-entry correctness. So correctness of the numbers is guaranteed by the deterministic core, and the AI's job is faithful summarization of those numbers. The evaluation then confirmed users found the answers accurate and legally relevant. Adding automated grounding checks (verifying any code/figure the model emits against the ledger) is the rigorous next step.</p>
+
+<p class="q"><b>Q123. Isn't a one-person microservices project just adding distributed-systems complexity for its own sake?</b></p>
+<p class="a">The complexity is justified by genuine requirements, not fashion: legal immutability forces append-only ledgers and reversal sagas; cross-service reliability for money forces the outbox and idempotency; the Ledger's ACID needs and the AI's vector needs force polyglot persistence. Each pattern answers a concrete requirement from the domain. The project also explicitly demonstrates these distributed-systems competencies as an academic objective, so the architecture is purposeful.</p>
+
+<hr>
+
+<h2>TIER 14 — Theory deep-cuts (less likely)</h2>
+
+<p class="q"><b>Q124. Why did monolithic architectures fall short for enterprise apps?</b></p>
+<p class="a">Tight coupling. A monolith is one deployable on one database, so any change forces a redeploy of everything, and you scale by cloning the whole app rather than the component under load. Those limits became acute as enterprise applications matured, motivating the move first to SOA and then to microservices.</p>
+
+<p class="q"><b>Q125. What was SOA and why did the ESB undermine it?</b></p>
+<p class="a">Service-Oriented Architecture (2000s) broke monoliths into coarse-grained services, conceptually sound, but most implementations routed communication through a central Enterprise Service Bus that handled routing and transformation. That made the ESB a single point of failure and re-coupled services to the bus, producing a brittle, tightly-coupled system — the very problem microservices' decentralized "smart endpoints, dumb pipes" approach was designed to avoid.</p>
+
+<p class="q"><b>Q126. What is BASE and how does it contrast with ACID?</b></p>
+<p class="a">BASE — Basically Available, Soft state, Eventually consistent — is the distributed-systems counterpart to ACID's immediate consistency. BASE trades strict consistency for availability and partition tolerance. My system uses ACID within each service's database for transactional correctness, and accepts BASE-style eventual consistency across services, but reins it in with sagas where financial correctness can't tolerate it.</p>
+
+<p class="q"><b>Q127. What is self-attention and why did it replace RNNs?</b></p>
+<p class="a">Self-attention lets a model weigh the relevance of every token to every other token in a sequence simultaneously, rather than processing sequentially like an RNN. That parallelism and ability to capture long-range relationships regardless of distance is what made transformers vastly more capable at language tasks, underpinning the LLMs my RAG pipeline relies on.</p>
+
+<p class="q"><b>Q128. What's the difference between retrieval, augmentation and generation in RAG?</b></p>
+<p class="a">Retrieval: the query is vectorized and a semantic search finds the most relevant stored chunks. Augmentation: those factual chunks are injected into the LLM's context window alongside the query. Generation: the LLM produces an answer constrained to that provided context. The sequence turns a probabilistic model into a reasoning layer over verified data.</p>
+
+<p class="q"><b>Q129. Why is grounding domain-specific knowledge essential for financial RAG?</b></p>
+<p class="a">RAG's value scales with the specificity of its knowledge base; generic finance knowledge can't answer questions about Kosovo's SKA conventions or ATK requirements. NLP-for-finance literature confirms domain grounding is what makes such tools practically useful, which is why I ground in two Kosovo-specific sources rather than relying on the model's general training.</p>
+
+<p class="q"><b>Q130. What is "soft state" and where does it appear in your system?</b></p>
+<p class="a">Soft state means a system's state may be transiently inconsistent and is reconciled over time, rather than being immediately durable everywhere. In Guri Finance it appears in the brief window after Operations commits a bill but before the Ledger has processed the event and AI has updated its aggregate — the outbox, idempotency and ordering guarantees ensure that soft state converges correctly.</p>
+
+<hr>
+
+<h2>TIER 15 — Reflection, scope &amp; least-likely curveballs</h2>
+
+<p class="q"><b>Q131. What was the hardest technical challenge?</b></p>
+<p class="a">Getting distributed correctness right for money — specifically the transactional outbox and idempotent consumers after discovering that a crash between the DB write and the Kafka publish could lose an event, and building the storno saga with a working compensation path. Translating the CAP/saga theory into a system that's reliable under failure was the core difficulty and the most rewarding part.</p>
+
+<p class="q"><b>Q132. What's the single most important lesson you took from this project?</b></p>
+<p class="a">That compliance is best modeled as an inherent property of the domain, not a bolt-on validation step — embedding SKA codes into the aggregate removed a whole class of bypass defects. Closely behind: in money systems the transactional outbox should be designed in from day one, because retrofitting it is the costly path and the failure it prevents is exactly the kind you can't tolerate.</p>
+
+<p class="q"><b>Q133. If you started again, what would you do differently?</b></p>
+<p class="a">Design the outbox and idempotency in from the very first iteration rather than after hitting the dual-write failure, plan the VAT control-account postings and multi-currency Money value object up front, and build the storno UI affordance early since correctness without discoverability still failed users. Architecturally the direction was right; the refinements are about sequencing and UX.</p>
+
+<p class="q"><b>Q134. Who validated that your Kosovo compliance is actually correct?</b></p>
+<p class="a">A practising Kosovo accountant, Mr. Ngadhënjim Sheremeti, advised on Law No. 06/L-032, the SKA and ATK reporting requirements and helped recruit the accountant evaluators. So the compliance model was checked by domain expertise, not just my own reading of the law — which is essential for a regulatory product.</p>
+
+<p class="q"><b>Q135. What would convince a cautious accountant to actually adopt this?</b></p>
+<p class="a">A track record. The low likelihood-to-use scores were about unproven-software caution, not the product, so the answer is the recommended pilot with a small number of real Kosovo SMEs under supervision — producing operational evidence, independent security and uptime validation, and the missing adoption features (multi-currency, deeper reporting). Trust in financial software is earned through demonstrated reliability over time.</p>
+
+<p class="q"><b>Q136. How is your system extensible to a new requirement, e.g. payroll?</b></p>
+<p class="a">Add a Payroll bounded context as its own service and database, define its aggregates, have it publish events the Ledger consumes into the appropriate SKA accounts via new posting templates, register any payroll compliance rules, and add gateway routing. Because contexts integrate only through event/HTTP contracts, existing services need no changes — the architecture was designed to be extended this way.</p>
+
+<p class="q"><b>Q137. What does your system deliberately not do, and why is that a strength?</b></p>
+<p class="a">It deliberately omits OCR bill scanning (infeasible solo), multi-currency (Kosovo is euro-only by default) and automated bank reconciliation (Kosovo banks lack APIs), and the AI deliberately never calculates or posts. Scoping decisions made explicit and justified are a strength in an FYP — they show engineering judgement about where to invest limited effort for maximum relevance to the research question.</p>
+
+<p class="q"><b>Q138. If you had to cut one of your five services, which and why?</b></p>
+<p class="a">None cleanly, but Compliance is the most "merge-able" — it's stateless reference data and could in principle be a shared library rather than a service. I kept it separate so the taxonomy has a single authoritative owner with a live-update endpoint and so SKA/VAT rules are enforced uniformly across services; that ownership clarity outweighs the slight overhead of an extra service.</p>
+
+<p class="q"><b>Q139. How does your work contribute beyond a typical CRUD project?</b></p>
+<p class="a">It combines three substantive areas — a DDD microservices architecture with real distributed-systems patterns (outbox, idempotency, saga, polyglot persistence), a domain-embedded Kosovo compliance model, and a domain-grounded RAG pipeline — into a working, evaluated system addressing a real, evidenced market gap. The contribution is the integration of compliance-by-design with AI grounding in a jurisdiction no existing product serves.</p>
+
+<p class="q"><b>Q140. In one sentence, why does Guri Finance deserve a strong mark?</b></p>
+<p class="a">It identifies a real, evidenced gap, addresses it with a theoretically-grounded distributed architecture that enforces Kosovo compliance at the domain level and grounds AI in local data, and validates the result both technically (coverage, sub-200 ms p95, passing load tests) and with domain experts (4.64/5), while being candid about its scope and the path to production.</p>
+
+<hr>
+<p style="color:#555"><i>End of report-based question bank — 140 questions. Rehearse Tiers 1–6 until automatic; they cover the technology rationale, the gap, DDD, the distributed patterns, the accounting domain and the AI — which is where the bulk of a code-and-report viva is decided. For every limitation, answer with the report's own framing: a deliberate, documented, scoped decision with a named resolution.</i></p>
+
+</body>
+</html>
